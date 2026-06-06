@@ -5,9 +5,11 @@ import { readFileSync } from 'node:fs';
 import { parsePolymarketCurve } from '../model.js';
 import { mulberry32, medianCapT, sampleCap, curveArrays, parsePolymarketCurve as ppc2 } from '../model.js';
 import { parseHyperliquid } from '../model.js';
+import { realizedVolFromCandles } from '../model.js';
 
 const polyEvent = JSON.parse(readFileSync(new URL('./fixtures/poly-event.json', import.meta.url)));
 const hlMeta = JSON.parse(readFileSync(new URL('./fixtures/hl-meta.json', import.meta.url)));
+const hlCandles = JSON.parse(readFileSync(new URL('./fixtures/hl-candles.json', import.meta.url)));
 
 test('parseThresholdToCap handles $T and $B and decimals', () => {
   assert.equal(parseThresholdToCap('SpaceX IPO closing market cap above $1T?'), 1e12);
@@ -51,4 +53,11 @@ test('parseHyperliquid extracts xyz:SPCX mark/oracle/funding', () => {
   assert.ok(hl.mark > 50 && hl.mark < 1000, `mark ${hl.mark} implausible`);
   assert.ok(isFinite(hl.oracle) && isFinite(hl.prevDay) && isFinite(hl.funding));
   assert.equal(parseHyperliquid([{ universe: [] }, []]), null);
+});
+
+test('realizedVolFromCandles returns positive sigmas and a 0-100 slider value', () => {
+  const v = realizedVolFromCandles(hlCandles);
+  assert.ok(v && v.hourlySigma > 0 && v.dailySigma > v.hourlySigma);
+  assert.ok(v.sliderVal >= 0 && v.sliderVal <= 100);
+  assert.equal(realizedVolFromCandles([]), null);
 });

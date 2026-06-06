@@ -85,3 +85,17 @@ export function parseHyperliquid(metaAndCtxs, coin = 'xyz:SPCX') {
     prevDay: +c.prevDayPx, funding: +c.funding
   };
 }
+
+// Hourly candles → realized vol. Maps daily sigma into v1's slider band: sigMid = 0.02 + 0.18*(slider/100).
+export function realizedVolFromCandles(candles) {
+  const closes = (candles || []).map(k => +k.c).filter(x => isFinite(x) && x > 0);
+  if (closes.length < 3) return null;
+  const rets = [];
+  for (let i = 1; i < closes.length; i++) rets.push(Math.log(closes[i] / closes[i - 1]));
+  const mu = rets.reduce((a, b) => a + b, 0) / rets.length;
+  const varr = rets.reduce((a, b) => a + (b - mu) * (b - mu), 0) / (rets.length - 1);
+  const hourlySigma = Math.sqrt(varr);
+  const dailySigma = hourlySigma * Math.sqrt(6.5); // ~6.5 trading hours/session
+  const sliderVal = Math.max(0, Math.min(100, Math.round((dailySigma - 0.02) / 0.18 * 100)));
+  return { hourlySigma, dailySigma, sliderVal };
+}
