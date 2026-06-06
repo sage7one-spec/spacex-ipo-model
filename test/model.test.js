@@ -4,8 +4,10 @@ import { parseThresholdToCap } from '../model.js';
 import { readFileSync } from 'node:fs';
 import { parsePolymarketCurve } from '../model.js';
 import { mulberry32, medianCapT, sampleCap, curveArrays, parsePolymarketCurve as ppc2 } from '../model.js';
+import { parseHyperliquid } from '../model.js';
 
 const polyEvent = JSON.parse(readFileSync(new URL('./fixtures/poly-event.json', import.meta.url)));
+const hlMeta = JSON.parse(readFileSync(new URL('./fixtures/hl-meta.json', import.meta.url)));
 
 test('parseThresholdToCap handles $T and $B and decimals', () => {
   assert.equal(parseThresholdToCap('SpaceX IPO closing market cap above $1T?'), 1e12);
@@ -41,4 +43,12 @@ test('sampleCap is deterministic under a seeded RNG and stays in plausible range
   // determinism: same seed → same first draw
   const r2 = mulberry32(20260611);
   assert.equal(sampleCap(thresh, above, r2), samples[0]);
+});
+
+test('parseHyperliquid extracts xyz:SPCX mark/oracle/funding', () => {
+  const hl = parseHyperliquid(hlMeta);
+  assert.ok(hl, 'should find xyz:SPCX');
+  assert.ok(hl.mark > 50 && hl.mark < 1000, `mark ${hl.mark} implausible`);
+  assert.ok(isFinite(hl.oracle) && isFinite(hl.prevDay) && isFinite(hl.funding));
+  assert.equal(parseHyperliquid([{ universe: [] }, []]), null);
 });

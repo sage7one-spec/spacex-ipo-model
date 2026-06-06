@@ -73,3 +73,15 @@ export function medianCapT(thresh, above) {
   }
   return thresh[Math.floor(last / 2)];
 }
+
+export function parseHyperliquid(metaAndCtxs, coin = 'xyz:SPCX') {
+  if (!Array.isArray(metaAndCtxs) || metaAndCtxs.length < 2) return null;
+  const [meta, ctxs] = metaAndCtxs;
+  const i = (meta?.universe || []).findIndex(a => a.name === coin);
+  if (i < 0) return null;
+  const c = ctxs[i] || {};
+  return {
+    mark: +c.markPx, oracle: +c.oraclePx,
+    prevDay: +c.prevDayPx, funding: +c.funding
+  };
+}
