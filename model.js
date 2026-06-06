@@ -86,6 +86,17 @@ export function parseHyperliquid(metaAndCtxs, coin = 'xyz:SPCX') {
   };
 }
 
+export function disagreement(hlMark, polyMedianPerShare) {
+  const avg = (hlMark + polyMedianPerShare) / 2;
+  const absPct = avg > 0 ? Math.abs(hlMark - polyMedianPerShare) / avg : 0;
+  const tier = absPct < 0.05 ? 'high' : absPct < 0.15 ? 'moderate' : 'low';
+  return { absPct, tier, deltaUsd: hlMark - polyMedianPerShare };
+}
+
+export function blendCenter(hlMark, polyMedianPerShare, w) {
+  return w * hlMark + (1 - w) * polyMedianPerShare;
+}
+
 // Hourly candles → realized vol. Maps daily sigma into v1's slider band: sigMid = 0.02 + 0.18*(slider/100).
 export function realizedVolFromCandles(candles) {
   const closes = (candles || []).map(k => +k.c).filter(x => isFinite(x) && x > 0);

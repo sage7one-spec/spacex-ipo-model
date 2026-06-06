@@ -6,6 +6,7 @@ import { parsePolymarketCurve } from '../model.js';
 import { mulberry32, medianCapT, sampleCap, curveArrays, parsePolymarketCurve as ppc2 } from '../model.js';
 import { parseHyperliquid } from '../model.js';
 import { realizedVolFromCandles } from '../model.js';
+import { disagreement, blendCenter } from '../model.js';
 
 const polyEvent = JSON.parse(readFileSync(new URL('./fixtures/poly-event.json', import.meta.url)));
 const hlMeta = JSON.parse(readFileSync(new URL('./fixtures/hl-meta.json', import.meta.url)));
@@ -60,4 +61,16 @@ test('realizedVolFromCandles returns positive sigmas and a 0-100 slider value', 
   assert.ok(v && v.hourlySigma > 0 && v.dailySigma > v.hourlySigma);
   assert.ok(v.sliderVal >= 0 && v.sliderVal <= 100);
   assert.equal(realizedVolFromCandles([]), null);
+});
+
+test('disagreement tiers by relative spread', () => {
+  assert.equal(disagreement(165, 168).tier, 'high');    // ~1.8%
+  assert.equal(disagreement(165, 185).tier, 'moderate'); // ~11%
+  assert.equal(disagreement(165, 230).tier, 'low');      // ~33%
+});
+
+test('blendCenter interpolates between sources by weight w', () => {
+  assert.equal(blendCenter(160, 200, 0), 200); // w=0 → pure Polymarket
+  assert.equal(blendCenter(160, 200, 1), 160); // w=1 → pure Hyperliquid
+  assert.equal(blendCenter(160, 200, 0.5), 180);
 });
