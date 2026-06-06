@@ -51,8 +51,8 @@ export function gaussFrom(rng) {
 // Inverse-CDF sample of closing market cap ($T) from the survival curve (generalized from v1).
 export function sampleCap(thresh, above, rng) {
   const u = rng() * 100, last = above.length - 1;
-  if (u >= above[0]) { const f = (u - above[0]) / ((100 - above[0]) || 1); return thresh[0] * (1 - f * 0.15); }
-  if (u <= above[last]) { const f = (above[last] - u) / (above[last] || 1); return thresh[last] + f * (thresh[last] * 0.375); }
+  if (u >= above[0]) { const f = (u - above[0]) / ((100 - above[0]) || 1); return thresh[0] * (1 - f * 0.15); } // below lowest quoted threshold: extrapolate up to 15% under it
+  if (u <= above[last]) { const f = (above[last] - u) / (above[last] || 1); return thresh[last] + f * (thresh[last] * 0.375); } // above highest quoted threshold: extrapolate up to 37.5% over it
   for (let i = 0; i < last; i++) {
     if (above[i] >= u && u >= above[i + 1]) {
       const f = (above[i] - u) / ((above[i] - above[i + 1]) || 1);
@@ -106,12 +106,12 @@ export function realizedVolFromCandles(candles) {
   const mu = rets.reduce((a, b) => a + b, 0) / rets.length;
   const varr = rets.reduce((a, b) => a + (b - mu) * (b - mu), 0) / (rets.length - 1);
   const hourlySigma = Math.sqrt(varr);
-  const dailySigma = hourlySigma * Math.sqrt(6.5); // ~6.5 trading hours/session
-  const sliderVal = Math.max(0, Math.min(100, Math.round((dailySigma - 0.02) / 0.18 * 100)));
-  return { hourlySigma, dailySigma, sliderVal };
+  const sessionSigma = hourlySigma * Math.sqrt(6.5); // scale 24/7 hourly vol to the ~6.5h Day-1 equity trading session this model simulates
+  const sliderVal = Math.max(0, Math.min(100, Math.round((sessionSigma - 0.02) / 0.18 * 100)));
+  return { hourlySigma, sessionSigma, sliderVal };
 }
 
-// Historical Day-1 open->close returns (mega-IPO base rates, from v1).
+// Day-1 open→close returns from public mega-IPO first-day histories (ported from v1 model).
 const OPEN_TO_CLOSE = [0.073, 0.134, -0.056, -0.138, -0.009, 0.036, 0.042, -0.109, -0.084, -0.091, -0.103, -0.010, 0.041];
 
 export function simulateDayOne(cfg) {

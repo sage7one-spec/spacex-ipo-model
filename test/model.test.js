@@ -1,13 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseThresholdToCap } from '../model.js';
 import { readFileSync } from 'node:fs';
-import { parsePolymarketCurve } from '../model.js';
-import { mulberry32, medianCapT, sampleCap, curveArrays, parsePolymarketCurve as ppc2 } from '../model.js';
-import { parseHyperliquid } from '../model.js';
-import { realizedVolFromCandles } from '../model.js';
-import { disagreement, blendCenter } from '../model.js';
-import { simulateDayOne } from '../model.js';
+import {
+  parseThresholdToCap,
+  parsePolymarketCurve,
+  mulberry32, medianCapT, sampleCap, curveArrays,
+  parseHyperliquid,
+  realizedVolFromCandles,
+  disagreement, blendCenter,
+  simulateDayOne,
+} from '../model.js';
 
 const polyEvent = JSON.parse(readFileSync(new URL('./fixtures/poly-event.json', import.meta.url)));
 const hlMeta = JSON.parse(readFileSync(new URL('./fixtures/hl-meta.json', import.meta.url)));
@@ -32,14 +34,14 @@ test('parsePolymarketCurve returns sorted, monotonic-non-increasing survival cur
 });
 
 test('medianCapT brackets the 50% crossing', () => {
-  const { thresh, above } = curveArrays(ppc2(polyEvent));
+  const { thresh, above } = curveArrays(parsePolymarketCurve(polyEvent));
   const med = medianCapT(thresh, above);
-  // today's data: median cap between $2.0T and $2.2T
+  // fixture data: median cap between $2.0T and $2.2T
   assert.ok(med > 1.8 && med < 2.6, `median cap ${med} out of expected range`);
 });
 
 test('sampleCap is deterministic under a seeded RNG and stays in plausible range', () => {
-  const { thresh, above } = curveArrays(ppc2(polyEvent));
+  const { thresh, above } = curveArrays(parsePolymarketCurve(polyEvent));
   const rng = mulberry32(20260611);
   const samples = Array.from({ length: 5000 }, () => sampleCap(thresh, above, rng));
   const mean = samples.reduce((a, b) => a + b, 0) / samples.length;
@@ -59,7 +61,7 @@ test('parseHyperliquid extracts xyz:SPCX mark/oracle/funding', () => {
 
 test('realizedVolFromCandles returns positive sigmas and a 0-100 slider value', () => {
   const v = realizedVolFromCandles(hlCandles);
-  assert.ok(v && v.hourlySigma > 0 && v.dailySigma > v.hourlySigma);
+  assert.ok(v && v.hourlySigma > 0 && v.sessionSigma > v.hourlySigma);
   assert.ok(v.sliderVal >= 0 && v.sliderVal <= 100);
   assert.equal(realizedVolFromCandles([]), null);
 });
@@ -77,7 +79,7 @@ test('blendCenter interpolates between sources by weight w', () => {
 });
 
 test('simulateDayOne produces well-formed, deterministic, blend-responsive output', () => {
-  const { thresh, above } = curveArrays(ppc2(polyEvent));
+  const { thresh, above } = curveArrays(parsePolymarketCurve(polyEvent));
   const shares = 12.96e9;
   const base = { thresh, above, shares, offer: 135, vol: 60, N: 3000, steps: 8 };
 
