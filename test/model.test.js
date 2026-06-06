@@ -7,6 +7,7 @@ import { mulberry32, medianCapT, sampleCap, curveArrays, parsePolymarketCurve as
 import { parseHyperliquid } from '../model.js';
 import { realizedVolFromCandles } from '../model.js';
 import { disagreement, blendCenter } from '../model.js';
+import { simulateDayOne } from '../model.js';
 
 const polyEvent = JSON.parse(readFileSync(new URL('./fixtures/poly-event.json', import.meta.url)));
 const hlMeta = JSON.parse(readFileSync(new URL('./fixtures/hl-meta.json', import.meta.url)));
@@ -73,4 +74,25 @@ test('blendCenter interpolates between sources by weight w', () => {
   assert.equal(blendCenter(160, 200, 0), 200); // w=0 → pure Polymarket
   assert.equal(blendCenter(160, 200, 1), 160); // w=1 → pure Hyperliquid
   assert.equal(blendCenter(160, 200, 0.5), 180);
+});
+
+test('simulateDayOne produces well-formed, deterministic, blend-responsive output', () => {
+  const { thresh, above } = curveArrays(ppc2(polyEvent));
+  const shares = 12.96e9;
+  const base = { thresh, above, shares, offer: 135, vol: 60, N: 3000, steps: 8 };
+
+  const a = simulateDayOne({ ...base, hlMark: 165, w: 0.5, rng: mulberry32(20260611) });
+  assert.equal(a.closes.length, 3000);
+  assert.equal(a.grid.length, 9);            // steps+1 time nodes
+  assert.equal(a.grid[0].length, 3000);
+  assert.ok(a.closes.every(x => x > 0));
+
+  // determinism: same seed → identical center
+  const b = simulateDayOne({ ...base, hlMark: 165, w: 0.5, rng: mulberry32(20260611) });
+  assert.equal(a.center, b.center);
+
+  // blend responds to w: higher Hyperliquid weight pulls center toward a higher hlMark
+  const lowHL  = simulateDayOne({ ...base, hlMark: 250, w: 0.0, rng: mulberry32(1) });
+  const highHL = simulateDayOne({ ...base, hlMark: 250, w: 1.0, rng: mulberry32(1) });
+  assert.ok(highHL.center > lowHL.center, 'w=1 should pull center toward hlMark=250');
 });

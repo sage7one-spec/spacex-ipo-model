@@ -110,3 +110,37 @@ export function realizedVolFromCandles(candles) {
   const sliderVal = Math.max(0, Math.min(100, Math.round((dailySigma - 0.02) / 0.18 * 100)));
   return { hourlySigma, dailySigma, sliderVal };
 }
+
+// Historical Day-1 open->close returns (mega-IPO base rates, from v1).
+const OPEN_TO_CLOSE = [0.073, 0.134, -0.056, -0.138, -0.009, 0.036, 0.042, -0.109, -0.084, -0.091, -0.103, -0.010, 0.041];
+
+export function simulateDayOne(cfg) {
+  const { thresh, above, shares, hlMark, w, offer, vol, N = 10000, steps = 8, rng } = cfg;
+  const gauss = () => gaussFrom(rng);
+  const polyMedCap = medianCapT(thresh, above);          // $T
+  const polyMedPerShare = polyMedCap * 1e12 / shares;    // $/share
+  const center = blendCenter(hlMark, polyMedPerShare, w);// $/share
+  const factor = polyMedPerShare > 0 ? center / polyMedPerShare : 1; // multiplicative re-center (keeps shape)
+  const n = steps, sigMid = 0.02 + 0.18 * (vol / 100), s = 2 * sigMid / Math.sqrt(n);
+  const closes = [], lows = [], highs = [], grid = Array.from({ length: n + 1 }, () => []);
+  for (let p = 0; p < N; p++) {
+    const cap = sampleCap(thresh, above, rng);           // $T
+    const C = (cap * 1e12 / shares) * factor;            // $/share, blended close
+    const oc = OPEN_TO_CLOSE[Math.floor(rng() * OPEN_TO_CLOSE.length)] + gauss() * 0.02;
+    const O = C / (1 + oc);                              // opening print
+    const lO = Math.log(O), lC = Math.log(C);
+    let W = 0; const Wk = [0];
+    for (let k = 1; k <= n; k++) { W += gauss() * s; Wk.push(W); }
+    const Wn = Wk[n];
+    let lo = Infinity, hi = -Infinity;
+    for (let k = 0; k <= n; k++) {
+      const bb = Wk[k] - (k / n) * Wn;
+      const price = Math.exp(lO + (lC - lO) * (k / n) + bb);
+      grid[k].push(price);
+      if (price < lo) lo = price;
+      if (price > hi) hi = price;
+    }
+    closes.push(C); lows.push(lo); highs.push(hi);
+  }
+  return { closes, lows, highs, grid, entry: offer, center, polyMedPerShare };
+}
