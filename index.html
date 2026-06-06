@@ -25,7 +25,7 @@
   canvas{max-width:100%}
   .cbox{position:relative;width:100%;height:280px}
   .cbox.tall{height:320px}.cbox.short{height:230px}
-  .controls{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+  .controls{display:grid;grid-template-columns:repeat(5,1fr);gap:16px}
   @media(max-width:880px){.controls{grid-template-columns:1fr 1fr}}
   .ctl label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
   .ctl .val{color:var(--accent);font-weight:600}
@@ -81,8 +81,8 @@
         <input type="range" id="w" min="0" max="100" value="50"><div class="hint" style="margin-top:6px">0% = pure Polymarket close · 100% = pure Hyperliquid mark.</div></div>
       <div class="ctl"><label>Shares outstanding <span class="val" id="shLbl">12.96B</span></label>
         <input type="number" id="shares" value="12.96" min="1" max="30" step="0.01"><div class="hint" style="margin-top:6px">Converts Polymarket market-cap odds → $/share.</div></div>
-      <div class="ctl"><label>Intraday volatility <span class="val" id="volLbl">60</span> / 100</label>
-        <input type="range" id="vol" min="0" max="100" value="60"><div class="hint" style="margin-top:6px">How wild the swings are between open and close.</div></div>
+      <div class="ctl"><label>Intraday volatility <span class="val" id="volLbl">6</span> / 100</label>
+        <input type="range" id="vol" min="0" max="100" value="6"><div class="hint" style="margin-top:6px">How wild the swings are between open and close.</div></div>
     </div>
   </div>
 
@@ -220,7 +220,8 @@ function updateLiveStrip(dis){
   setText('hlMark', '$'+hl.mark.toFixed(2));
   const chg = hl.prevDay ? (hl.mark/hl.prevDay - 1) : 0;
   setText('hlChg', (chg>=0?'+':'')+(chg*100).toFixed(1)+'% 24h');
-  setText('polyPx', '$'+ (medianCapT(...Object.values(curveArrays(live.curve)))*1e12/state.shares).toFixed(0));
+  const {thresh:_t,above:_a}=curveArrays(live.curve);
+  setText('polyPx', '$'+ (medianCapT(_t,_a)*1e12/state.shares).toFixed(0));
   const b = document.getElementById('liveBadge');
   b.textContent = live.status==='live' ? 'live' : live.status==='partial' ? 'partial (some last-known)' : 'last-known data';
   b.className = 'pill '+(live.status==='live'?'green':'warn');
@@ -306,18 +307,52 @@ function bind(){
   g('w').addEventListener('input', e=>{ state.w=(+e.target.value)/100; setText('wLbl', e.target.value+'%'); render(); });
   g('shares').addEventListener('input', e=>{ state.shares=Math.max(1,(+e.target.value||12.96))*1e9; setText('shLbl', (state.shares/1e9).toFixed(2)+'B'); render(); });
   g('vol').addEventListener('input',e=>{state.vol=+e.target.value;setText('volLbl',state.vol);render();});
-  g('vol').setAttribute('value', state.vol); // reflect realized-vol default
+  g('vol').value = state.vol; setText('volLbl', state.vol); // reflect realized-vol default
   g('reroll').addEventListener('click',()=>{SEED=(SEED*1664525+1013904223)>>>0;reseed();render();});
   g('refresh').addEventListener('click', ()=>{ fetchLive(); }); // fetchLive defined in Task 10; safe no-op stub until then
 }
 
-async function fetchLive(){ render(); } // replaced in Task 10
+const HL_URL = 'https://api.hyperliquid.xyz/info';
+const POLY_URL = 'https://gamma-api.polymarket.com/events?slug=spacex-ipo-closing-market-cap-above';
+
+async function fetchHyperliquid(){
+  const [metaRes, candleRes] = await Promise.all([
+    fetch(HL_URL,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({type:'metaAndAssetCtxs',dex:'xyz'})}),
+    fetch(HL_URL,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({type:'candleSnapshot',req:{coin:'xyz:SPCX',interval:'1h',startTime:Date.now()-1000*60*60*24*21}})})
+  ]);
+  const hl = parseHyperliquid(await metaRes.json());
+  const vol = realizedVolFromCandles(await candleRes.json());
+  if(!hl) throw new Error('SPCX not found');
+  return { hl, vol };
+}
+async function fetchPolymarket(){
+  const ev = await (await fetch(POLY_URL)).json();
+  const curve = parsePolymarketCurve(ev);
+  if(!curve.length) throw new Error('no Polymarket buckets');
+  return curve;
+}
+
+async function fetchLive(){
+  const badge = document.getElementById('liveBadge');
+  badge.textContent='loading…'; badge.className='pill';
+  let okHL=false, okPoly=false;
+  try { const r = await fetchHyperliquid(); live.hl=r.hl; if(r.vol){ live.vol=r.vol; state.vol=r.vol.sliderVal;
+        const vEl=document.getElementById('vol'); if(vEl){ vEl.value=r.vol.sliderVal; setText('volLbl', r.vol.sliderVal);} } okHL=true; }
+  catch(e){ console.warn('HL fetch failed', e); live.hl=BAKED_SNAPSHOT.hl; }
+  try { live.curve = await fetchPolymarket(); okPoly=true; }
+  catch(e){ console.warn('Poly fetch failed', e); live.curve=BAKED_SNAPSHOT.curve; }
+  live.status = (okHL&&okPoly) ? 'live' : (okHL||okPoly) ? 'partial' : 'snapshot';
+  live.asOf = (okHL||okPoly) ? new Date().toISOString().slice(0,16).replace('T',' ')+' UTC' : BAKED_SNAPSHOT.asOf;
+  render();
+}
 
 if(typeof Chart==='undefined'){
   const w=document.querySelector('.wrap');const d=document.createElement('div');d.className='disc';
   d.textContent='⚠ Charts could not load. This page pulls the Chart.js graphing library from the internet (cdn.jsdelivr.net). Connect to the internet and reload, or tell me and I will build an offline version with the library embedded.';
   w.insertBefore(d,w.children[1]);
-}else{bind();render();}
+} else { bind(); render(); fetchLive(); }
 </script>
 </body>
 </html>
