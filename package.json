@@ -1,0 +1,9 @@
+{
+  "name": "spacex-ipo-model",
+  "version": "2.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test"
+  }
+}
