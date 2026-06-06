@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SpaceX IPO — Day-1 Intraday Model ($135 allocation)</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root{--panel:#121826;--panel2:#0f1420;--line:#1e2940;--txt:#e7ecf5;--muted:#8b97ad;
+    --accent:#7c5cff;--blue:#4da3ff;--green:#28d17c;--red:#ff5c6c;--amber:#ffb648;--grid:#1a2336;}
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(180deg,#070a11,#0a0e17);color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.45;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1120px;margin:0 auto;padding:28px 22px 60px}
+  header h1{font-size:24px;margin:0 0 4px;letter-spacing:-.5px}
+  header .sub{color:var(--muted);font-size:13.5px;margin-bottom:6px}
+  .derived{font-size:12.5px;color:#bfa9ff;margin:6px 0 2px}
+  .pill{display:inline-block;font-size:11.5px;padding:3px 9px;border-radius:20px;background:#1a1330;border:1px solid #3a2c63;color:#cbb8ff;margin:2px 4px 2px 0}
+  .pill.warn{background:#2a1e10;border-color:#5a3d17;color:#ffcf8f}
+  .pill.green{background:#0f2a1d;border-color:#1d6a45;color:#7ff0b6}
+  .grid{display:grid;gap:16px}.cols-2{grid-template-columns:1fr 1fr}
+  @media(max-width:880px){.cols-2{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}
+  .card h2{font-size:14px;margin:0 0 2px}.card .hint{color:var(--muted);font-size:12px;margin:0 0 12px}
+  canvas{max-width:100%}
+  .cbox{position:relative;width:100%;height:280px}
+  .cbox.tall{height:320px}.cbox.short{height:230px}
+  .controls{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+  @media(max-width:880px){.controls{grid-template-columns:1fr 1fr}}
+  .ctl label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
+  .ctl .val{color:var(--accent);font-weight:600}
+  input[type=range]{width:100%;accent-color:var(--accent)}
+  input[type=number]{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:8px 10px;font-size:14px}
+  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:4px}
+  @media(max-width:880px){.metrics{grid-template-columns:1fr 1fr}}
+  .metric{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:14px}
+  .metric .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .metric .v{font-size:22px;font-weight:700;margin-top:3px}.metric .s{font-size:11.5px;color:var(--muted);margin-top:2px}
+  .pos{color:var(--green)}.neg{color:var(--red)}.neu{color:var(--amber)}
+  .verdict{background:linear-gradient(135deg,#160f2a,#1a1433);border:1px solid #3a2c63;border-radius:14px;padding:20px}
+  .verdict .lead{font-size:15px;line-height:1.6}.verdict b{color:#fff}
+  .foot{color:var(--muted);font-size:12px;margin-top:18px;line-height:1.6}.foot b{color:#c5cfe0}
+  .disc{background:#1c1208;border:1px solid #4a2f12;color:#ffcf9c;border-radius:12px;padding:14px 16px;font-size:12.5px;line-height:1.6;margin-top:18px}
+  a{color:var(--blue)}
+  .secrow{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:26px 0 12px}
+  .secrow h3{font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:0}
+  .secrow .ln{flex:1;height:1px;background:var(--line)}
+  .btn{background:#231a3e;border:1px solid var(--accent);color:#cbb8ff;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px}
+  #liveStrip .s{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>&#128640; SpaceX IPO — Day-1 Intraday Model</h1>
+    <div class="sub">You bought the $135 pre-IPO allocation. This models the probable price path across the Day-1 trading session, with the close blended from live Hyperliquid and Polymarket data.</div>
+    <div class="derived" id="derived"></div>
+    <div style="margin-top:8px">
+      <span class="pill warn">&#9888; June 11 / $135 are your inputs — unverified; Polymarket backstop is Dec 31 2027. Confirm with Fidelity.</span>
+      <span class="pill green">P(close &gt; $135) ≈ <b id="ppPill">90%</b></span>
+    </div>
+    <div id="liveStrip" class="card" style="margin-top:12px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:13px">
+      <span id="liveBadge" class="pill">snapshot</span>
+      <span>SPCX <b id="hlMark">—</b> <span id="hlChg" class="s"></span></span>
+      <span>Poly median/sh <b id="polyPx">—</b></span>
+      <span id="disChip" class="pill"></span>
+      <span id="fundChip" class="pill"></span>
+      <span class="s" id="asOf"></span>
+      <button class="btn" id="refresh">&#10227; Refresh data</button>
+    </div>
+  </header>
+
+  <div class="secrow"><h3>Inputs</h3><span class="ln"></span><button class="btn" id="reroll">&#8635; Re-run simulation</button></div>
+  <div class="card">
+    <div class="controls">
+      <div class="ctl"><label>Position size <span class="val" id="posLbl">$100,000</span></label>
+        <input type="number" id="pos" value="100000" min="1000" step="1000"><div class="hint" style="margin-top:6px">Shares ≈ position ÷ $135.</div></div>
+      <div class="ctl"><label>Allocation price (entry) <span class="val" id="offerLbl">$135</span></label>
+        <input type="number" id="offer" value="135" min="1" step="1"><div class="hint" style="margin-top:6px">What Fidelity sells it to you for.</div></div>
+      <div class="ctl"><label>Hyperliquid ⇄ Polymarket weight <span class="val" id="wLbl">50%</span></label>
+        <input type="range" id="w" min="0" max="100" value="50"><div class="hint" style="margin-top:6px">0% = pure Polymarket close · 100% = pure Hyperliquid mark.</div></div>
+      <div class="ctl"><label>Shares outstanding <span class="val" id="shLbl">12.96B</span></label>
+        <input type="number" id="shares" value="12.96" min="1" max="30" step="0.01"><div class="hint" style="margin-top:6px">Converts Polymarket market-cap odds → $/share.</div></div>
+      <div class="ctl"><label>Intraday volatility <span class="val" id="volLbl">60</span> / 100</label>
+        <input type="range" id="vol" min="0" max="100" value="60"><div class="hint" style="margin-top:6px">How wild the swings are between open and close.</div></div>
+    </div>
+  </div>
+
+  <div class="metrics" id="metrics" style="margin-top:16px"></div>
+
+  <div class="secrow"><h3>Verdict</h3><span class="ln"></span></div>
+  <div class="verdict"><div class="lead" id="verdict"></div></div>
+
+  <div class="secrow"><h3>Intraday Probability Fan — the 8-hour day</h3><span class="ln"></span></div>
+  <div class="card">
+    <h2>Where the price likely trades, hour by hour</h2>
+    <p class="hint">10,000 simulated paths from the opening print to the blended close. Dark band = 25th–75th pct (most likely zone), light band = 10th–90th pct. White line = median. Dashed = your $135 entry — you're in profit above it.</p>
+    <div class="cbox tall"><canvas id="fanChart"></canvas></div>
+  </div>
+
+  <div class="secrow"><h3>Day-1 Outcomes</h3><span class="ln"></span></div>
+  <div class="grid cols-2">
+    <div class="card"><h2>Closing price distribution (blended)</h2>
+      <p class="hint">Where it settles at 4pm. Dashed line = your $135 break-even; everything right of it is profit.</p>
+      <div class="cbox short"><canvas id="closeChart"></canvas></div></div>
+    <div class="card"><h2>Intraday low &amp; high — the day's swing</h2>
+      <p class="hint">The lowest (red) and highest (green) price it touches at some point during the day, in $/share. Your $135 entry sits at the far left.</p>
+      <div class="cbox short"><canvas id="rangeChart"></canvas></div></div>
+  </div>
+
+  <div class="secrow"><h3>Polymarket Source Odds (live)</h3><span class="ln"></span></div>
+  <div class="card"><h2>P(closing market cap above threshold)</h2>
+    <p class="hint">The crowd-sourced curve that sets the close spread.</p>
+    <div class="cbox short"><canvas id="survChart"></canvas></div></div>
+
+  <div class="foot">
+    <b>How it works.</b> Each of 10,000 paths samples a Day-1 <i>closing</i> market cap from the live Polymarket distribution → a closing price (cap ÷ shares outstanding), then re-centers it toward the blend of the Hyperliquid <code>xyz:SPCX</code> mark and the Polymarket-implied price (weight slider). The opening print is drawn from historical mega-IPO open-to-close behavior, then a Brownian-bridge random walk (scaled by your intraday-volatility setting) connects the open to that close across 8 hourly steps. The fan shows the percentile envelope of those paths; the low/high charts show each path's intraday extremes.
+    <br><br>
+    <b>Honest read.</b> At $135 with a blended close near the live mark, the <i>close</i> is usually green — but the <i>intraday</i> ride can still dip below your entry early before settling higher, and a thin minority of paths close red. The model says "probably up, possibly bumpy," not "guaranteed." It cannot predict a specific halt, circuit-breaker, or news shock.
+    <br><br>
+    <b>Sources.</b> <a href="https://polymarket.com/event/spacex-ipo-closing-market-cap-above" target="_blank">Polymarket SpaceX IPO market-cap markets</a> and Hyperliquid <code>xyz:SPCX</code> synthetic pre-IPO perp. Open-to-close behavior: public mega-IPO first-day price histories.
+  </div>
+  <div class="disc">
+    <b>Not financial advice.</b> The June 11 2026 date and $135 price are inputs you supplied and are <b>not independently verified here</b> — no S-1 in my data, and Polymarket still resolves "No" if no IPO occurs by Dec 31 2027. The Hyperliquid <code>xyz:SPCX</code> perp is a synthetic proxy with basis risk (note the May 28 flash-crash). A $2T-scale listing may behave nothing like the historical comparables, and intraday IPO volatility can be extreme (halts, gaps). Confirm terms with Fidelity. A $100,000 position can move thousands of dollars in minutes. Size to what you can afford to lose.
+  </div>
+</div>
+
+<script type="module">
+import { mulberry32, parsePolymarketCurve, curveArrays, parseHyperliquid,
+         realizedVolFromCandles, medianCapT, disagreement, simulateDayOne } from './model.js';
+import { BAKED_SNAPSHOT } from './snapshot.js';
+
+// Live data store — starts as the baked snapshot, replaced by fetchLive() in Task 10.
+const live = {
+  hl: BAKED_SNAPSHOT.hl,
+  curve: BAKED_SNAPSHOT.curve,
+  vol: BAKED_SNAPSHOT.vol,
+  asOf: BAKED_SNAPSHOT.asOf,
+  status: 'snapshot'   // 'live' | 'snapshot' | 'partial'
+};
+
+const state = { pos:100000, offer:135, shares:12.96e9, w:0.5, vol:BAKED_SNAPSHOT.vol.sliderVal, N:10000, steps:8 };
+let SEED = 20260611;
+let rng = mulberry32(SEED);
+function reseed(){ rng = mulberry32(SEED); }
+
+const STEP_LABELS=['Open','+1h','+2h','+3h','+4h','+5h','+6h','+7h','Close'];
+
+function pctile(arr,p){const s=[...arr].sort((a,b)=>a-b);const idx=(s.length-1)*p;const lo=Math.floor(idx),hi=Math.ceil(idx);return s[lo]+(s[hi]-s[lo])*(idx-lo);}
+function mean(a){return a.reduce((x,y)=>x+y,0)/a.length;}
+function fracBelow(a,x){return a.filter(v=>v<x).length/a.length;}
+function fracAbove(a,x){return a.filter(v=>v>x).length/a.length;}
+function fmtPct(x){return (x>=0?'+':'')+(x*100).toFixed(1)+'%';}
+function fmtUsd(x){return (x<0?'-$':'$')+Math.abs(Math.round(x)).toLocaleString();}
+function cls(x){return x>0.001?'pos':x<-0.001?'neg':'neu';}
+function setText(id,t){document.getElementById(id).textContent=t;}
+
+let fanChart,closeChart,rangeChart,survChart;
+const GRID='#1a2336',TICK='#8b97ad',PUR='#7c5cff',BLUE='#4da3ff';
+const baseOpts=(e={})=>Object.assign({responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+  scales:{x:{grid:{color:GRID},ticks:{color:TICK}},y:{grid:{color:GRID},ticks:{color:TICK}}}},e);
+
+function render(){
+  reseed();
+  const { thresh, above } = curveArrays(live.curve);
+  const sim = simulateDayOne({ thresh, above, shares: state.shares, hlMark: live.hl.mark,
+                               w: state.w, offer: state.offer, vol: state.vol, N: state.N, steps: state.steps, rng });
+  const { closes, lows, highs, grid, entry } = sim;
+  const polyMedPerShare = sim.polyMedPerShare;
+  const dis = disagreement(live.hl.mark, polyMedPerShare);
+
+  const pProfit = fracAbove(closes, entry);
+  const meanC = mean(closes), evRet = meanC/entry - 1, evDol = state.pos*evRet;
+  const pUnder = fracBelow(lows, entry);
+  const medLow = pctile(lows,.5)/entry - 1, medHigh = pctile(highs,.5)/entry - 1;
+  const shares = state.pos/entry;
+
+  setText('ppPill', (pProfit*100).toFixed(0)+'%');
+  setText('derived',
+    `Blended close ≈ $${sim.center.toFixed(0)} · Hyperliquid $${live.hl.mark.toFixed(2)} ⇄ Polymarket-implied $${polyMedPerShare.toFixed(0)} · you hold ≈ ${Math.round(shares).toLocaleString()} sh`);
+
+  updateLiveStrip(dis);
+
+  // metric cards (v1 verbatim — consume closes/lows/highs/entry)
+  const M=document.getElementById('metrics');M.textContent='';
+  [{k:'P(profit at close)',v:(pProfit*100).toFixed(0)+'%',c:pProfit>=.5?'pos':'neg',s:'close above $'+entry},
+   {k:'Expected close',v:'$'+meanC.toFixed(0),c:cls(evRet),s:`${fmtPct(evRet)} · ${fmtUsd(evDol)} P&L`},
+   {k:'Dips below entry intraday',v:(pUnder*100).toFixed(0)+'%',c:pUnder>0.4?'neg':'neu',s:`median low ${fmtPct(medLow)}`},
+   {k:'Median intraday high',v:fmtPct(medHigh),c:'pos',s:`peak paper gain ${fmtUsd(state.pos*medHigh)}`}
+  ].forEach(m=>{const d=document.createElement('div');d.className='metric';
+    const k=document.createElement('div');k.className='k';k.textContent=m.k;
+    const v=document.createElement('div');v.className='v '+m.c;v.textContent=m.v;
+    const s=document.createElement('div');s.className='s';s.textContent=m.s;
+    d.append(k,v,s);M.appendChild(d);});
+
+  // verdict (v1 verbatim — consumes closes/lows/highs/entry)
+  const v=document.getElementById('verdict');v.textContent='';
+  const b=(t,c)=>{const e=document.createElement('b');e.textContent=t;if(c)e.style.color=c;return e;};
+  const p10c=pctile(closes,.1), p90c=pctile(closes,.9);
+  v.append(
+    document.createTextNode('Holding your $135 allocation through Day 1: the close is '),
+    b((pProfit*100).toFixed(0)+'% likely to be green',pProfit>=.7?'#28d17c':'#ffb648'),
+    document.createTextNode(`, with an expected close around $${meanC.toFixed(0)} (`),
+    b(fmtPct(evRet),cls(evRet)),document.createTextNode(`, `),b(fmtUsd(evDol),cls(evRet)),
+    document.createTextNode(` on $${state.pos.toLocaleString()}). The middle-80% of closes lands roughly $${p10c.toFixed(0)}–$${p90c.toFixed(0)}.`),
+    document.createElement('br'),document.createElement('br'),
+    document.createTextNode(`Intraday, expect a swing: a typical path touches a low near ${fmtPct(medLow)} and a high near ${fmtPct(medHigh)} versus your entry, and there's a `),
+    b((pUnder*100).toFixed(0)+'% chance it dips below $135 at some point',pUnder>0.4?'#ff5c6c':'#ffb648'),
+    document.createTextNode(' during the day before the close. Translation: the odds favor closing up, but the ride can be choppy — decide in advance whether you sell into intraday strength or hold for the close, and don\'t let an early dip shake a position the model says usually recovers.')
+  );
+
+  drawFan(grid,entry);
+  drawClose(closes,entry);
+  drawRange(lows,highs,entry);
+  drawSurv(thresh,above);
+}
+
+function updateLiveStrip(dis){
+  const hl = live.hl;
+  setText('hlMark', '$'+hl.mark.toFixed(2));
+  const chg = hl.prevDay ? (hl.mark/hl.prevDay - 1) : 0;
+  setText('hlChg', (chg>=0?'+':'')+(chg*100).toFixed(1)+'% 24h');
+  setText('polyPx', '$'+ (medianCapT(...Object.values(curveArrays(live.curve)))*1e12/state.shares).toFixed(0));
+  const b = document.getElementById('liveBadge');
+  b.textContent = live.status==='live' ? 'live' : live.status==='partial' ? 'partial (some last-known)' : 'last-known data';
+  b.className = 'pill '+(live.status==='live'?'green':'warn');
+  const dc = document.getElementById('disChip');
+  dc.textContent = 'agreement: '+dis.tier+' ('+(dis.absPct*100).toFixed(0)+'%)';
+  dc.className = 'pill '+(dis.tier==='high'?'green':dis.tier==='low'?'warn':'');
+  const fc = document.getElementById('fundChip');
+  const f = live.hl.funding||0;
+  fc.textContent = 'funding '+(f>=0?'+':'')+(f*100).toFixed(4)+'% '+(f>=0?'(longs pay)':'(shorts pay)');
+  fc.className = 'pill';
+  setText('asOf', 'as of '+live.asOf);
+}
+
+function band(arr,p){return arr.map(col=>pctile(col,p));}
+function drawFan(grid,entry){
+  const p10=band(grid,.1),p25=band(grid,.25),p50=band(grid,.5),p75=band(grid,.75),p90=band(grid,.9);
+  const eLine=STEP_LABELS.map(()=>entry);
+  if(fanChart)fanChart.destroy();
+  fanChart=new Chart(document.getElementById('fanChart'),{type:'line',
+    data:{labels:STEP_LABELS,datasets:[
+      {label:'p90',data:p90,borderColor:'rgba(0,0,0,0)',backgroundColor:'rgba(124,92,255,.10)',fill:'+1',pointRadius:0,tension:.25},
+      {label:'p10',data:p10,borderColor:'rgba(0,0,0,0)',fill:false,pointRadius:0,tension:.25},
+      {label:'p75',data:p75,borderColor:'rgba(0,0,0,0)',backgroundColor:'rgba(124,92,255,.28)',fill:'+1',pointRadius:0,tension:.25},
+      {label:'p25',data:p25,borderColor:'rgba(0,0,0,0)',fill:false,pointRadius:0,tension:.25},
+      {label:'Median',data:p50,borderColor:'#fff',borderWidth:2.5,pointRadius:3,pointBackgroundColor:'#fff',fill:false,tension:.25},
+      {label:'Entry $'+entry,data:eLine,borderColor:'#ffb648',borderWidth:1.5,borderDash:[6,4],pointRadius:0}
+    ]},
+    options:baseOpts({scales:{x:{grid:{color:GRID},ticks:{color:TICK}},y:{grid:{color:GRID},ticks:{color:TICK,callback:v=>'$'+v}}},
+      plugins:{legend:{display:false},tooltip:{filter:c=>['Median','Entry $'+entry,'p25','p75','p10','p90'].includes(c.dataset.label),
+        callbacks:{label:c=>{const lab={p90:'90th pct',p10:'10th pct',p75:'75th pct',p25:'25th pct'}[c.dataset.label]||c.dataset.label;return lab+': $'+c.raw.toFixed(0);}}}}})});
+}
+
+function hist(arr,lo,hi,bins){const w=(hi-lo)/bins,c=new Array(bins).fill(0);arr.forEach(x=>{let b=Math.floor((x-lo)/w);if(b<0)b=0;if(b>=bins)b=bins-1;c[b]++;});return c;}
+function drawClose(closes,entry){
+  const lo=pctile(closes,.005),hi=pctile(closes,.995),bins=40;
+  const counts=hist(closes,lo,hi,bins);
+  const labels=Array.from({length:bins},(_,i)=>lo+(i+0.5)*(hi-lo)/bins);
+  const colors=labels.map(p=>p>=entry?'rgba(40,209,124,.75)':'rgba(255,92,108,.8)');
+  if(closeChart)closeChart.destroy();
+  closeChart=new Chart(document.getElementById('closeChart'),{type:'bar',
+    data:{labels:labels.map(p=>'$'+p.toFixed(0)),datasets:[{data:counts,backgroundColor:colors,barPercentage:1,categoryPercentage:1}]},
+    options:baseOpts({scales:{x:{grid:{display:false},ticks:{color:TICK,maxTicksLimit:9}},y:{grid:{color:GRID},ticks:{color:TICK},title:{display:true,text:'paths',color:TICK}}},
+      plugins:{legend:{display:false},tooltip:{callbacks:{title:c=>'close ≈ '+c[0].label,label:c=>c.raw+' paths'}}}})});
+}
+function drawRange(lows,highs,entry){
+  const lo=Math.min(pctile(lows,.005),entry*0.96), hi=pctile(highs,.995), bins=44;
+  const cl=hist(lows,lo,hi,bins), ch=hist(highs,lo,hi,bins);
+  const labels=Array.from({length:bins},(_,i)=>lo+(i+0.5)*(hi-lo)/bins);
+  // inline plugin: dashed vertical line at the $135 entry
+  const entryLine={id:'entryLine',afterDraw(chart){
+    const xs=chart.scales.x, area=chart.chartArea, ctx=chart.ctx;
+    const half=(area.right-area.left)/(2*bins), usable=(area.right-area.left)-2*half;
+    const px=(area.left+half)+(entry-lo)/(hi-lo)*usable;
+    ctx.save();ctx.strokeStyle='#ffb648';ctx.lineWidth=1.5;ctx.setLineDash([6,4]);
+    ctx.beginPath();ctx.moveTo(px,area.top);ctx.lineTo(px,area.bottom);ctx.stroke();
+    ctx.setLineDash([]);ctx.fillStyle='#ffb648';ctx.font='600 11px sans-serif';ctx.textAlign='left';
+    ctx.fillText('$'+entry+' entry',Math.min(px+5,area.right-66),area.top+12);ctx.restore();
+  }};
+  if(rangeChart)rangeChart.destroy();
+  rangeChart=new Chart(document.getElementById('rangeChart'),{type:'line',
+    data:{labels:labels.map(v=>'$'+v.toFixed(0)),datasets:[
+      {label:'Intraday low',data:cl,borderColor:'#ff5c6c',backgroundColor:'rgba(255,92,108,.18)',fill:true,pointRadius:0,tension:.3,borderWidth:2},
+      {label:'Intraday high',data:ch,borderColor:'#28d17c',backgroundColor:'rgba(40,209,124,.18)',fill:true,pointRadius:0,tension:.3,borderWidth:2}]},
+    options:baseOpts({scales:{x:{grid:{display:false},ticks:{color:TICK,maxTicksLimit:9},title:{display:true,text:'price ($) — your entry $'+entry,color:TICK}},y:{grid:{color:GRID},ticks:{color:TICK},title:{display:true,text:'paths',color:TICK}}},
+      plugins:{legend:{display:false},tooltip:{callbacks:{title:c=>'≈ '+c[0].label,label:c=>c.dataset.label+': '+c.raw+' paths'}}}}),
+    plugins:[entryLine]});
+}
+function drawSurv(thresh, above){
+  if(survChart) survChart.destroy();
+  survChart = new Chart(document.getElementById('survChart'), { type:'line',
+    data:{ labels: thresh.map(t=>'$'+t.toFixed(1)+'T'),
+      datasets:[{ data: above, borderColor:PUR, backgroundColor:'rgba(124,92,255,.12)',
+        borderWidth:2.5, pointRadius:3, pointBackgroundColor:PUR, fill:true, tension:.2 }] },
+    options: baseOpts({ scales:{ x:{grid:{color:GRID},ticks:{color:TICK,maxTicksLimit:9}},
+      y:{grid:{color:GRID},ticks:{color:TICK,callback:v=>v+'%'},min:0,max:100} },
+      plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>'P(cap > '+c.label+') = '+(+c.raw).toFixed(0)+'%'}} } }) });
+}
+
+function bind(){
+  const g=id=>document.getElementById(id);
+  g('pos').addEventListener('input',e=>{state.pos=Math.max(0,+e.target.value||0);setText('posLbl','$'+state.pos.toLocaleString());render();});
+  g('offer').addEventListener('input',e=>{state.offer=Math.max(1,+e.target.value||1);setText('offerLbl','$'+state.offer);render();});
+  g('w').addEventListener('input', e=>{ state.w=(+e.target.value)/100; setText('wLbl', e.target.value+'%'); render(); });
+  g('shares').addEventListener('input', e=>{ state.shares=Math.max(1,(+e.target.value||12.96))*1e9; setText('shLbl', (state.shares/1e9).toFixed(2)+'B'); render(); });
+  g('vol').addEventListener('input',e=>{state.vol=+e.target.value;setText('volLbl',state.vol);render();});
+  g('vol').setAttribute('value', state.vol); // reflect realized-vol default
+  g('reroll').addEventListener('click',()=>{SEED=(SEED*1664525+1013904223)>>>0;reseed();render();});
+  g('refresh').addEventListener('click', ()=>{ fetchLive(); }); // fetchLive defined in Task 10; safe no-op stub until then
+}
+
+async function fetchLive(){ render(); } // replaced in Task 10
+
+if(typeof Chart==='undefined'){
+  const w=document.querySelector('.wrap');const d=document.createElement('div');d.className='disc';
+  d.textContent='⚠ Charts could not load. This page pulls the Chart.js graphing library from the internet (cdn.jsdelivr.net). Connect to the internet and reload, or tell me and I will build an offline version with the library embedded.';
+  w.insertBefore(d,w.children[1]);
+}else{bind();render();}
+</script>
+</body>
+</html>
