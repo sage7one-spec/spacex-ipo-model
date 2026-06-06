@@ -30,3 +30,46 @@ export function parsePolymarketCurve(eventJson) {
 export function curveArrays(curve) {
   return { thresh: curve.map(r => r.capT), above: curve.map(r => r.pAbove) };
 }
+
+// Seeded RNG (ported from v1) — keeps results reproducible.
+export function mulberry32(seed) {
+  let s = seed >>> 0;
+  return function () {
+    s = s + 0x6D2B79F5 | 0;
+    let t = Math.imul(s ^ s >>> 15, 1 | s);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+export function gaussFrom(rng) {
+  let u = 0, v = 0;
+  while (u === 0) u = rng();
+  while (v === 0) v = rng();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+
+// Inverse-CDF sample of closing market cap ($T) from the survival curve (generalized from v1).
+export function sampleCap(thresh, above, rng) {
+  const u = rng() * 100, last = above.length - 1;
+  if (u >= above[0]) { const f = (u - above[0]) / ((100 - above[0]) || 1); return thresh[0] * (1 - f * 0.15); }
+  if (u <= above[last]) { const f = (above[last] - u) / (above[last] || 1); return thresh[last] + f * (thresh[last] * 0.375); }
+  for (let i = 0; i < last; i++) {
+    if (above[i] >= u && u >= above[i + 1]) {
+      const f = (above[i] - u) / ((above[i] - above[i + 1]) || 1);
+      return thresh[i] + f * (thresh[i + 1] - thresh[i]);
+    }
+  }
+  return thresh[Math.floor(last / 2)];
+}
+
+// Polymarket-implied median closing cap ($T) via interpolation at the 50% crossing.
+export function medianCapT(thresh, above) {
+  const last = above.length - 1;
+  for (let i = 0; i < last; i++) {
+    if (above[i] >= 50 && 50 >= above[i + 1]) {
+      const f = (above[i] - 50) / ((above[i] - above[i + 1]) || 1);
+      return thresh[i] + f * (thresh[i + 1] - thresh[i]);
+    }
+  }
+  return thresh[Math.floor(last / 2)];
+}
