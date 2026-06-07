@@ -25,6 +25,12 @@
   canvas{max-width:100%}
   .cbox{position:relative;width:100%;height:280px}
   .cbox.tall{height:320px}.cbox.short{height:230px}
+  .heatwrap{position:relative;width:100%;height:320px}
+  .heattip{position:absolute;pointer-events:none;display:none;background:#0b0f1a;border:1px solid #2a3650;border-radius:7px;
+    padding:6px 9px;font-size:11.5px;color:var(--txt);transform:translate(-50%,-118%);white-space:nowrap;box-shadow:0 4px 14px rgba(0,0,0,.5);z-index:5}
+  .heatleg{display:flex;align-items:center;gap:10px;font-size:11.5px;color:var(--muted);margin-top:10px;flex-wrap:wrap}
+  .heatleg .grad{height:11px;width:170px;border-radius:3px;background:linear-gradient(90deg,#0a0e17,#3a2c63,#7c5cff,#b58bff,#ffe7a0)}
+  .heatleg .sw{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:4px}
   .controls{display:grid;grid-template-columns:repeat(5,1fr);gap:16px}
   @media(max-width:880px){.controls{grid-template-columns:1fr 1fr}}
   .ctl label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
@@ -91,11 +97,20 @@
   <div class="secrow"><h3>Verdict</h3><span class="ln"></span></div>
   <div class="verdict"><div class="lead" id="verdict"></div></div>
 
-  <div class="secrow"><h3>Intraday Probability Fan — the 8-hour day</h3><span class="ln"></span></div>
+  <div class="secrow"><h3>Intraday Probability — where the price trades, hour by hour</h3><span class="ln"></span></div>
   <div class="card">
-    <h2>Where the price likely trades, hour by hour</h2>
-    <p class="hint">10,000 simulated paths from the opening print to the blended close. Dark band = 25th–75th pct (most likely zone), light band = 10th–90th pct. White line = median. Dashed = your $135 entry — you're in profit above it.</p>
-    <div class="cbox tall"><canvas id="fanChart"></canvas></div>
+    <h2>Probability heatmap — price &times; hour</h2>
+    <p class="hint">10,000 simulated paths from the opening print to the blended close. Brighter = more paths sit at that price in that hour. White line = median path; dashed amber = your $135 entry — you're in profit above it. Hover for the exact odds.</p>
+    <div class="heatwrap"><canvas id="heatChart"></canvas><div id="heatTip" class="heattip"></div></div>
+    <div class="heatleg">
+      <span>less likely</span><span class="grad"></span><span>more likely</span>
+      <span style="margin-left:2px">brightest ≈ <b id="heatPeak">—</b> of paths per cell</span>
+      <span style="margin-left:8px"><span class="sw" style="background:#fff"></span>median path</span>
+      <span><span class="sw" style="background:#ffb648"></span><b id="heatEntryLbl">$135</b> entry</span>
+    </div>
+    <h2 style="margin-top:24px">What price will you see? — touch probability</h2>
+    <p class="hint">For each price level, the chance the stock trades there at <i>some point</i> during the day — not just at the close. Green = in profit above $135; red = underwater.</p>
+    <div class="cbox short"><canvas id="touchChart"></canvas></div>
   </div>
 
   <div class="secrow"><h3>Day-1 Outcomes</h3><span class="ln"></span></div>
@@ -155,7 +170,7 @@ function fmtUsd(x){return (x<0?'-$':'$')+Math.abs(Math.round(x)).toLocaleString(
 function cls(x){return x>0.001?'pos':x<-0.001?'neg':'neu';}
 function setText(id,t){document.getElementById(id).textContent=t;}
 
-let fanChart,closeChart,rangeChart,survChart;
+let closeChart,rangeChart,survChart,touchChart;
 const GRID='#1a2336',TICK='#8b97ad',PUR='#7c5cff',BLUE='#4da3ff';
 const baseOpts=(e={})=>Object.assign({responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
   scales:{x:{grid:{color:GRID},ticks:{color:TICK}},y:{grid:{color:GRID},ticks:{color:TICK}}}},e);
@@ -183,7 +198,7 @@ function render(){
 
   // metric cards (v1 verbatim — consume closes/lows/highs/entry)
   const M=document.getElementById('metrics');M.textContent='';
-  [{k:'P(profit at close)',v:(pProfit*100).toFixed(0)+'%',c:pProfit>=.5?'pos':'neg',s:'close above $'+entry},
+  [{k:'Chance of a green close',v:(pProfit*100).toFixed(0)+'%',c:pProfit>=.5?'pos':'neg',s:'close above $'+entry},
    {k:'Expected close',v:'$'+meanC.toFixed(0),c:cls(evRet),s:`${fmtPct(evRet)} · ${fmtUsd(evDol)} P&L`},
    {k:'Dips below entry intraday',v:(pUnder*100).toFixed(0)+'%',c:pUnder>0.4?'neg':'neu',s:`median low ${fmtPct(medLow)}`},
    {k:'Median intraday high',v:fmtPct(medHigh),c:'pos',s:`peak paper gain ${fmtUsd(state.pos*medHigh)}`}
@@ -209,7 +224,8 @@ function render(){
     document.createTextNode(' during the day before the close. Translation: the odds favor closing up, but the ride can be choppy — decide in advance whether you sell into intraday strength or hold for the close, and don\'t let an early dip shake a position the model says usually recovers.')
   );
 
-  drawFan(grid,entry);
+  drawHeatmap(grid,entry);
+  drawTouch(lows,highs,entry);
   drawClose(closes,entry);
   drawRange(lows,highs,entry);
   drawSurv(thresh,above);
@@ -235,23 +251,69 @@ function updateLiveStrip(dis){
   setText('asOf', 'as of '+live.asOf);
 }
 
-function band(arr,p){return arr.map(col=>pctile(col,p));}
-function drawFan(grid,entry){
-  const p10=band(grid,.1),p25=band(grid,.25),p50=band(grid,.5),p75=band(grid,.75),p90=band(grid,.9);
-  const eLine=STEP_LABELS.map(()=>entry);
-  if(fanChart)fanChart.destroy();
-  fanChart=new Chart(document.getElementById('fanChart'),{type:'line',
-    data:{labels:STEP_LABELS,datasets:[
-      {label:'p90',data:p90,borderColor:'rgba(0,0,0,0)',backgroundColor:'rgba(124,92,255,.10)',fill:'+1',pointRadius:0,tension:.25},
-      {label:'p10',data:p10,borderColor:'rgba(0,0,0,0)',fill:false,pointRadius:0,tension:.25},
-      {label:'p75',data:p75,borderColor:'rgba(0,0,0,0)',backgroundColor:'rgba(124,92,255,.28)',fill:'+1',pointRadius:0,tension:.25},
-      {label:'p25',data:p25,borderColor:'rgba(0,0,0,0)',fill:false,pointRadius:0,tension:.25},
-      {label:'Median',data:p50,borderColor:'#fff',borderWidth:2.5,pointRadius:3,pointBackgroundColor:'#fff',fill:false,tension:.25},
-      {label:'Entry $'+entry,data:eLine,borderColor:'#ffb648',borderWidth:1.5,borderDash:[6,4],pointRadius:0}
-    ]},
-    options:baseOpts({scales:{x:{grid:{color:GRID},ticks:{color:TICK}},y:{grid:{color:GRID},ticks:{color:TICK,callback:v=>'$'+v}}},
-      plugins:{legend:{display:false},tooltip:{filter:c=>['Median','Entry $'+entry,'p25','p75','p10','p90'].includes(c.dataset.label),
-        callbacks:{label:c=>{const lab={p90:'90th pct',p10:'10th pct',p75:'75th pct',p25:'25th pct'}[c.dataset.label]||c.dataset.label;return lab+': $'+c.raw.toFixed(0);}}}}})});
+// ---- Chart A: intraday probability heatmap (custom canvas) ----
+function heatColor(t){ // t in 0..1 → dark → purple → amber
+  t=Math.max(0,Math.min(1,t));
+  const stops=[[10,14,23],[58,44,99],[124,92,255],[181,139,255],[255,231,160]];
+  const x=t*(stops.length-1),i=Math.floor(x),f=x-i,a=stops[i],b=stops[Math.min(i+1,stops.length-1)];
+  return `rgb(${a[0]+(b[0]-a[0])*f|0},${a[1]+(b[1]-a[1])*f|0},${a[2]+(b[2]-a[2])*f|0})`;
+}
+function niceTicks(lo,hi,n){const out=[];for(let i=0;i<=n;i++){const v=Math.round((lo+(hi-lo)*i/n)/5)*5;if(!out.includes(v))out.push(v);}return out;}
+const HEAT={}; // geometry cache for hover
+function drawHeatmap(grid,entry){
+  const cv=document.getElementById('heatChart'),wrap=cv.parentElement,dpr=window.devicePixelRatio||1;
+  const W=wrap.clientWidth,H=wrap.clientHeight;
+  cv.width=W*dpr;cv.height=H*dpr;cv.style.width=W+'px';cv.style.height=H+'px';
+  const ctx=cv.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,W,H);
+  const steps=grid.length,N=grid[0].length,NB=56,padL=52,padR=14,padT=12,padB=26;
+  const plotW=W-padL-padR,plotH=H-padT-padB;
+  // adaptive price window: 5th–95th pct across the session, always including the entry line
+  const yMin=Math.min(...grid.map(c=>pctile(c,.05)),entry*0.97),yMax=Math.max(...grid.map(c=>pctile(c,.95)));
+  const cells=grid.map(col=>{const c=new Array(NB).fill(0);
+    for(const x of col){const b=Math.floor((x-yMin)/(yMax-yMin)*NB);if(b>=0&&b<NB)c[b]++;}return c.map(v=>v/N);});
+  let maxv=0;cells.forEach(c=>c.forEach(v=>{if(v>maxv)maxv=v;}));
+  const cw=plotW/steps,rh=plotH/NB;
+  for(let s=0;s<steps;s++)for(let b=0;b<NB;b++){
+    ctx.fillStyle=heatColor(Math.pow(cells[s][b]/maxv,0.7));
+    ctx.fillRect(padL+s*cw,padT+(NB-1-b)*rh,Math.ceil(cw)+1,Math.ceil(rh)+1);
+  }
+  const yOf=p=>padT+plotH-((p-yMin)/(yMax-yMin))*plotH,xOfStep=s=>padL+(s+0.5)*cw;
+  const med=grid.map(c=>pctile(c,.5));
+  ctx.strokeStyle='#fff';ctx.lineWidth=2.2;ctx.beginPath();
+  med.forEach((p,s)=>{const x=xOfStep(s),y=yOf(p);s?ctx.lineTo(x,y):ctx.moveTo(x,y);});ctx.stroke();
+  ctx.strokeStyle='#ffb648';ctx.lineWidth=1.5;ctx.setLineDash([6,4]);
+  ctx.beginPath();ctx.moveTo(padL,yOf(entry));ctx.lineTo(W-padR,yOf(entry));ctx.stroke();ctx.setLineDash([]);
+  ctx.fillStyle=TICK;ctx.font='11px sans-serif';ctx.textAlign='right';ctx.textBaseline='middle';
+  niceTicks(yMin,yMax,5).forEach(p=>{if(p>=yMin&&p<=yMax)ctx.fillText('$'+p,padL-6,yOf(p));});
+  ctx.textAlign='center';ctx.textBaseline='top';
+  STEP_LABELS.forEach((l,s)=>{if(s%2===0||s===steps-1)ctx.fillText(l,xOfStep(s),H-padB+6);});
+  setText('heatPeak',(maxv*100).toFixed(1)+'%');
+  setText('heatEntryLbl','$'+entry);
+  Object.assign(HEAT,{cells,steps,NB,yMin,yMax,padL,padR,padT,padB,plotH,cw,rh,W});
+}
+function heatHover(e){
+  const cv=document.getElementById('heatChart'),tip=document.getElementById('heatTip'),h=HEAT;
+  if(!h.cells)return;
+  const r=cv.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
+  if(mx<h.padL||mx>h.W-h.padR||my<h.padT||my>h.padT+h.plotH){tip.style.display='none';return;}
+  const s=Math.floor((mx-h.padL)/h.cw),b=h.NB-1-Math.floor((my-h.padT)/h.rh);
+  if(s<0||s>=h.steps||b<0||b>=h.NB){tip.style.display='none';return;}
+  const frac=h.cells[s][b],price=h.yMin+(b+0.5)/h.NB*(h.yMax-h.yMin);
+  tip.textContent='≈ $'+price.toFixed(0)+' at '+STEP_LABELS[s]+' — '+(frac*100).toFixed(1)+'% of paths';
+  tip.style.left=(h.padL+(s+0.5)*h.cw)+'px';tip.style.top=my+'px';tip.style.display='block';
+}
+// ---- Chart B: touch-probability ladder ----
+function drawTouch(lows,highs,entry){
+  const lo=Math.min(pctile(lows,.005),entry*0.96),hi=pctile(highs,.995),bins=56;
+  const mids=Array.from({length:bins},(_,i)=>lo+(i+0.5)*(hi-lo)/bins);
+  const touch=mids.map(m=>{let c=0;for(let i=0;i<lows.length;i++)if(lows[i]<=m&&highs[i]>=m)c++;return c/lows.length*100;});
+  const colors=mids.map(m=>m>=entry?'rgba(40,209,124,.8)':'rgba(255,92,108,.82)');
+  if(touchChart)touchChart.destroy();
+  touchChart=new Chart(document.getElementById('touchChart'),{type:'bar',
+    data:{labels:mids.map(m=>'$'+m.toFixed(0)),datasets:[{data:touch,backgroundColor:colors,barPercentage:1,categoryPercentage:1}]},
+    options:baseOpts({scales:{x:{grid:{display:false},ticks:{color:TICK,maxTicksLimit:10}},
+      y:{grid:{color:GRID},ticks:{color:TICK,callback:v=>v+'%'},title:{display:true,text:'chance price trades here during the day',color:TICK}}},
+      plugins:{legend:{display:false},tooltip:{callbacks:{title:c=>'price ≈ '+c[0].label,label:c=>(+c.raw).toFixed(1)+'% chance it touches here'}}}})});
 }
 
 function hist(arr,lo,hi,bins){const w=(hi-lo)/bins,c=new Array(bins).fill(0);arr.forEach(x=>{let b=Math.floor((x-lo)/w);if(b<0)b=0;if(b>=bins)b=bins-1;c[b]++;});return c;}
@@ -309,6 +371,9 @@ function bind(){
   g('vol').addEventListener('input',e=>{state.vol=+e.target.value;setText('volLbl',state.vol);render();});
   g('vol').value = state.vol; setText('volLbl', state.vol); // reflect realized-vol default
   g('reroll').addEventListener('click',()=>{SEED=(SEED*1664525+1013904223)>>>0;reseed();render();});
+  g('heatChart').addEventListener('mousemove',heatHover);
+  g('heatChart').addEventListener('mouseleave',()=>{document.getElementById('heatTip').style.display='none';});
+  window.addEventListener('resize',()=>{ if(window._hmRT) clearTimeout(window._hmRT); window._hmRT=setTimeout(render,150); });
   g('refresh').addEventListener('click', ()=>{ fetchLive(); }); // fetchLive defined in Task 10; safe no-op stub until then
 }
 
