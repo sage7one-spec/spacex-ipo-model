@@ -237,6 +237,45 @@ export function buildScenario(name, riskLevel, ctx) {
 }
 export const SCENARIO_NAMES = Object.keys(SCENARIO_DEFS);
 
+// Render a policy as Fidelity-executable tickets. Each upside tranche is an OCO
+// (sell-limit-up / sell-stop-down) on its shares; equal stop levels across tranches
+// behave as one whole-position stop (matches evaluatePolicy). Residual = MOC/LOC.
+export function ticketsFromPolicy(policy, opts = {}) {
+  const { shares, tranches, stopSchedule } = policy;
+  const openMin = opts.openMin ?? 600;   // 10:00 ET (IPOs often open late; adjust to the real open)
+  const closeMin = opts.closeMin ?? 960; // 16:00 ET
+  const clock = (frac) => {
+    const m = Math.round(openMin + frac * (closeMin - openMin));
+    const h = Math.floor(m / 60), mm = String(m % 60).padStart(2, '0');
+    const ap = h < 12 ? 'am' : 'pm', hh = ((h + 11) % 12) + 1;
+    return `${hh}:${mm}${ap} ET`;
+  };
+  const r = (n) => Math.round(n);
+  const firstStop = stopSchedule[0] || null;
+  const ladder = tranches.map((t, i) => ({
+    tranche: i + 1, shares: r(shares * t.frac),
+    limitPx: t.limitPx, stopPx: firstStop ? firstStop.stopPx : null,
+    type: 'OCO', tif: 'Day',
+  }));
+  const laddered = tranches.reduce((a, t) => a + t.frac, 0);
+  const residualShares = r(shares * (1 - laddered));
+  const checkpoints = stopSchedule.map((s, i) => ({
+    atFrac: s.from, clock: clock(s.from), stopPx: s.stopPx,
+    action: i === 0
+      ? `Add a protective Sell Stop at $${s.stopPx} on all unsold shares — place it once SPCX has a printed price (new IPOs reject stops until a quote exists).`
+      : `Cancel the prior stop and re-enter it at $${s.stopPx} on all unsold shares.`,
+  }));
+  return {
+    ladder,
+    residual: {
+      shares: residualShares, type: 'MOC',
+      note: `Sell-on-Close (MOC/LOC) for any unsold shares; enter before the ~3:45pm ET cutoff. If your account/security can't place on-close orders, sell at Market by ~3:50pm. The active stop also covers this residual until then.`,
+    },
+    checkpoints,
+    flatBy: clock(1),
+  };
+}
+
 // For each early step k, P(close > entry | price at step k < entry).
 export function conditionalRecovery(grid, entry, ks = [1, 2, 3]) {
   const steps = grid.length - 1, N = grid[0].length, close = grid[steps];

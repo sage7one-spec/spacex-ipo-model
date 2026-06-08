@@ -12,6 +12,7 @@ import {
   evaluatePolicy, sellAllAt,
   conditionalRecovery,
   buildScenario,
+  ticketsFromPolicy,
 } from '../model.js';
 
 const polyEvent = JSON.parse(readFileSync(new URL('./fixtures/poly-event.json', import.meta.url)));
@@ -197,4 +198,26 @@ test('buildScenario: higher riskLevel loosens stops and raises rungs', () => {
 
 test('buildScenario: unknown name throws', () => {
   assert.throws(() => buildScenario('nope', 50, { entry: 135, shares: 1111 }));
+});
+
+test('ticketsFromPolicy: OCO ladder + residual + checkpoints', () => {
+  const policy = buildScenario('balanced', 50, { entry: 135, shares: 1111 });
+  const t = ticketsFromPolicy(policy);
+  assert.equal(t.ladder.length, 4);                       // one OCO per tranche
+  assert.equal(t.ladder[0].type, 'OCO');
+  assert.equal(t.ladder[0].tif, 'Day');
+  assert.equal(t.ladder[0].limitPx, policy.tranches[0].limitPx);
+  assert.equal(t.ladder[0].stopPx, policy.stopSchedule[0].stopPx); // first scheduled stop
+  // share allocation: laddered shares + residual ≈ total position (rounding)
+  const laddered = t.ladder.reduce((a, r) => a + r.shares, 0);
+  assert.ok(Math.abs(laddered + t.residual.shares - 1111) <= t.ladder.length + 1);
+  assert.equal(t.residual.type, 'MOC');
+  assert.equal(t.checkpoints.length, policy.stopSchedule.length);
+  assert.match(t.checkpoints[0].clock, /ET$/);            // wall-clock formatted
+});
+
+test('ticketsFromPolicy: clock maps session fraction to ET window', () => {
+  const policy = buildScenario('balanced', 50, { entry: 135, shares: 1111 });
+  const t = ticketsFromPolicy(policy, { openMin: 600, closeMin: 960 }); // 10:00–16:00
+  assert.equal(t.flatBy, '4:00pm ET');
 });
