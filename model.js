@@ -144,3 +144,187 @@ export function simulateDayOne(cfg) {
   }
   return { closes, lows, highs, grid, entry: offer, center, polyMedPerShare };
 }
+
+// ---- Execution layer (pure, tested) -------------------------------------
+
+// Score one execution policy against a simulated open→close price grid.
+//   paths : { grid: number[steps+1][N] }            (grid-length-agnostic; entry/shares come from policy)
+//   policy: { shares, entry, coreAtOpenFrac?, tranches:[{frac,limitPx}], stopSchedule:[{from,stopPx}] }
+// Tie-break: within a step, upside limits fill BEFORE the protective stop.
+// The stop covers the whole remaining position. Residual sells at the close price.
+export function evaluatePolicy(paths, policy) {
+  const { grid } = paths;
+  const steps = grid.length - 1;
+  const N = grid[0].length;
+  const { shares, entry, coreAtOpenFrac = 0, tranches, stopSchedule } = policy;
+  const basis = shares * entry;
+  const proceeds = new Array(N);
+  let subCount = 0, subSharesSum = 0, netLoss = 0, openSum = 0, upSum = 0, stopSum = 0, closeSum = 0;
+
+  const activeStop = (frac) => {
+    let s = null;
+    for (const e of stopSchedule) if (e.from <= frac + 1e-9) s = e.stopPx;
+    return s;
+  };
+
+  for (let p = 0; p < N; p++) {
+    let left = shares, value = 0, subShares = 0;
+    const open = grid[0][p];
+    if (coreAtOpenFrac > 0) {                                  // 0) market-sell the core at the open
+      const q = shares * coreAtOpenFrac;
+      value += q * open; if (open < entry) subShares += q; openSum += q; left -= q;
+    }
+    const filled = new Array(tranches.length).fill(false);
+    for (let k = 0; k <= steps && left > 1e-9; k++) {
+      const price = grid[k][p], frac = k / steps;
+      for (let t = 0; t < tranches.length; t++) {            // A) upside limits first
+        if (filled[t] || price < tranches[t].limitPx) continue;
+        const qty = Math.min(left, shares * tranches[t].frac);
+        value += qty * tranches[t].limitPx; left -= qty; upSum += qty; filled[t] = true;
+      }
+      const stop = activeStop(frac);                          // B) protective stop on remainder
+      if (stop != null && left > 1e-9 && price <= stop) {
+        value += left * stop; if (stop < entry) subShares += left; stopSum += left; left = 0;
+      }
+    }
+    if (left > 1e-9) {                                        // C) forced close-out at close
+      const close = grid[steps][p];
+      value += left * close; if (close < entry) subShares += left; closeSum += left; left = 0;
+    }
+    proceeds[p] = value;
+    if (subShares > 1e-9) { subCount++; subSharesSum += subShares; }
+    if (value < basis - 1e-6) netLoss++;
+  }
+
+  const sorted = [...proceeds].sort((a, b) => a - b);
+  const pct = (q) => { const i = (N - 1) * q, lo = Math.floor(i), hi = Math.ceil(i); return sorted[lo] + (sorted[hi] - sorted[lo]) * (i - lo); };
+  const meanP = proceeds.reduce((a, b) => a + b, 0) / N;
+  const tot = N * shares;
+  return {
+    Eproceeds: meanP, medianProceeds: pct(0.5), p5: pct(0.05), p95: pct(0.95),
+    pNetLoss: netLoss / N, pSubBasisSale: subCount / N, eSharesSubBasis: subSharesSum / N,
+    avgSalePx: meanP / shares,
+    mix: { openPct: openSum / tot, upsidePct: upSum / tot, stopPct: stopSum / tot, closePct: closeSum / tot },
+  };
+}
+
+// Baseline: sell the entire position at one grid column (e.g. open or close).
+// Returns only { Eproceeds, avgSalePx } — a partial shape vs evaluatePolicy, sufficient
+// for baseline comparison (do not spread it into an evaluatePolicy-shaped consumer).
+export function sellAllAt(paths, stepIndex, shares) {
+  const col = paths.grid[stepIndex];
+  const m = col.reduce((a, b) => a + b, 0) / col.length;
+  return { Eproceeds: m * shares, avgSalePx: m };
+}
+
+// ---- Scenario presets (time-phased, risk-modulated) ---------------------
+
+const SCENARIO_DEFS = {
+  protect:  { core: 0.40, rungs: [0.02, 0.05, 0.09], splits: [0.22, 0.18, 0.12],
+              stops: [{ from: 0.10, pct: -0.08 }, { from: 0.55, pct: -0.04 }, { from: 0.85, pct: -0.02 }] },
+  balanced: { core: 0.30, rungs: [0.03, 0.07, 0.12], splits: [0.25, 0.20, 0.15],
+              stops: [{ from: 0.35, pct: -0.07 }, { from: 0.70, pct: -0.04 }, { from: 0.90, pct: -0.02 }] },
+  ride:     { core: 0.15, rungs: [0.06, 0.15, 0.28], splits: [0.25, 0.25, 0.20],
+              stops: [{ from: 0.20, pct: -0.12 }, { from: 0.80, pct: -0.04 }] },
+};
+
+// Upside rungs anchor ABOVE the reference opening price (refPx). The protective stop is
+// refPx-anchored but clamped to [entry, refPx] — never below the $135 basis, never above
+// the reference (which would imply an above-market stop). riskLevel 0..100: higher → higher
+// rungs + smaller core (ride the upside); lower → larger core sold at the open (protect).
+export function buildScenario(name, riskLevel, ctx) {
+  const def = SCENARIO_DEFS[name];
+  if (!def) throw new Error(`unknown scenario: ${name}`);
+  const { entry, shares, refPx } = ctx;
+  const ref = refPx ?? entry;
+  const f = 1 + (riskLevel - 50) / 100 * 0.5;
+  const core = Math.max(0, Math.min(1, def.core * (2 - f)));
+  const stopAt = (pct) => +Math.min(Math.max(ref * (1 + pct * f), entry), ref).toFixed(2);
+  return {
+    name, entry, shares, refPx: ref, coreAtOpenFrac: core,
+    tranches: def.rungs.map((r, i) => ({ frac: def.splits[i], limitPx: +(ref * (1 + r * f)).toFixed(2) })),
+    stopSchedule: def.stops.map(s => ({ from: s.from, stopPx: stopAt(s.pct) })),
+  };
+}
+export const SCENARIO_NAMES = Object.keys(SCENARIO_DEFS);
+
+// Render a policy as Fidelity-executable tickets. Each upside tranche is an OCO
+// (sell-limit-up / sell-stop-down) on its shares; equal stop levels across tranches
+// behave as one whole-position stop (matches evaluatePolicy). Residual = MOC/LOC.
+export function ticketsFromPolicy(policy, opts = {}) {
+  const { shares, coreAtOpenFrac = 0, tranches, stopSchedule } = policy;
+  const openMin = opts.openMin ?? 600;   // 10:00 ET (IPOs often open late; adjust to the real open)
+  const closeMin = opts.closeMin ?? 960; // 16:00 ET
+  const clock = (frac) => {
+    const m = Math.round(openMin + frac * (closeMin - openMin));
+    const h = Math.floor(m / 60), mm = String(m % 60).padStart(2, '0');
+    const ap = h < 12 ? 'am' : 'pm', hh = ((h + 11) % 12) + 1;
+    return `${hh}:${mm}${ap} ET`;
+  };
+  const r = (n) => Math.round(n);
+  const firstStop = stopSchedule[0] || null;
+  const coreShares = r(shares * coreAtOpenFrac);
+  const ladder = tranches.map((t, i) => ({
+    tranche: i + 1, shares: r(shares * t.frac),
+    limitPx: t.limitPx, stopPx: firstStop ? firstStop.stopPx : null,
+    type: 'OCO', tif: 'Day',
+  }));
+  // reconcile the residual against the rounded rows so the ticket table totals exactly `shares`
+  const residualShares = Math.max(0, Math.round(shares) - coreShares - ladder.reduce((a, L) => a + L.shares, 0));
+  const checkpoints = stopSchedule.map((s, i) => ({
+    atFrac: s.from, clock: clock(s.from), stopPx: s.stopPx,
+    action: i === 0
+      ? `Add a protective Sell Stop at $${s.stopPx} on all unsold shares — place it once SPCX has a printed price (new IPOs reject stops until a quote exists).`
+      : `Cancel the prior stop and re-enter it at $${s.stopPx} on all unsold shares.`,
+  }));
+  return {
+    coreAtOpen: {
+      shares: coreShares, type: 'MKT',
+      note: `Sell at Market (or a marketable limit) on the opening print to lock the in-the-money gain. This is the core of the plan when SPCX opens well above your $135 basis.`,
+    },
+    ladder,
+    residual: {
+      shares: residualShares, type: 'MOC',
+      note: `Sell-on-Close (MOC/LOC) for any unsold shares; enter before the ~3:45pm ET cutoff. If your account/security can't place on-close orders, sell at Market by ~3:50pm. The active stop also covers this residual until then.`,
+    },
+    checkpoints,
+    flatBy: clock(1),
+  };
+}
+
+// Day-16 "clean" exit: drift each Day-1 close forward holdDays trading days (drift 0,
+// with an overnight-gap term), then build an exitDays-day grid for a staged exit.
+export function simulateDay16(cfg) {
+  const { closes, dailySigma, rng, holdDays = 11, exitDays = 3, gapMult = 0.5 } = cfg;
+  const N = closes.length, g = () => gaussFrom(rng);
+  const step = (s) => s * Math.exp(-0.5 * dailySigma * dailySigma + g() * dailySigma + g() * dailySigma * gapMult);
+  const level16 = new Array(N);
+  for (let p = 0; p < N; p++) { let s = closes[p]; for (let d = 0; d < holdDays; d++) s = step(s); level16[p] = s; }
+  const pts = exitDays + 1;
+  const grid = Array.from({ length: pts }, () => new Array(N));
+  for (let p = 0; p < N; p++) { let s = level16[p]; grid[0][p] = s; for (let k = 1; k < pts; k++) { s = step(s); grid[k][p] = s; } }
+  return { grid, level16, meanLevel16: level16.reduce((a, b) => a + b, 0) / N };
+}
+
+// Day-16 staged exit, anchored to the day-16 reference level (refPx): a core sold on the
+// day-16 open, two limit rungs above it, residual to the day-18 close. Stops clamped to
+// [entry, refPx] like the Day-1 scenarios.
+export function buildDay16Policy(entry, shares, refPx) {
+  const ref = refPx ?? entry;
+  const stopAt = (pct) => +Math.min(Math.max(ref * (1 + pct), entry), ref).toFixed(2);
+  return {
+    entry, shares, refPx: ref, coreAtOpenFrac: 0.34,
+    tranches: [ { frac: 0.33, limitPx: +(ref * 1.04).toFixed(2) }, { frac: 0.18, limitPx: +(ref * 1.09).toFixed(2) } ],
+    stopSchedule: [ { from: 0.0, stopPx: stopAt(-0.06) }, { from: 0.66, stopPx: stopAt(-0.02) } ],
+  };
+}
+
+// For each early step k, P(close > entry | price at step k < entry).
+export function conditionalRecovery(grid, entry, ks = [1, 2, 3]) {
+  const steps = grid.length - 1, N = grid[0].length, close = grid[steps];
+  return ks.filter(k => k >= 0 && k <= steps).map(k => {
+    let dips = 0, recover = 0;
+    for (let p = 0; p < N; p++) if (grid[k][p] < entry) { dips++; if (close[p] > entry) recover++; }
+    return { k, frac: k / steps, dips, p: dips ? recover / dips : null };
+  });
+}
