@@ -212,6 +212,31 @@ export function sellAllAt(paths, stepIndex, shares) {
   return { Eproceeds: m * shares, avgSalePx: m };
 }
 
+// ---- Scenario presets (time-phased, risk-modulated) ---------------------
+
+const SCENARIO_DEFS = {
+  protect:  { rungs: [0.03, 0.06, 0.10],        splits: [0.40, 0.30, 0.20],
+              stops: [{ from: 0.25, pct: -0.04 }, { from: 0.60, pct: -0.02 }, { from: 0.85, pct: -0.01 }] },
+  balanced: { rungs: [0.04, 0.08, 0.12, 0.18],  splits: [0.25, 0.25, 0.25, 0.15],
+              stops: [{ from: 0.40, pct: -0.06 }, { from: 0.70, pct: -0.04 }, { from: 0.90, pct: -0.02 }] },
+  ride:     { rungs: [0.10, 0.20, 0.30],        splits: [0.25, 0.25, 0.25],
+              stops: [{ from: 0.15, pct: -0.12 }, { from: 0.80, pct: -0.03 }] },
+};
+
+// riskLevel 0..100 → modulation factor 0.75..1.25 (50 = neutral 1.0).
+export function buildScenario(name, riskLevel, ctx) {
+  const def = SCENARIO_DEFS[name];
+  if (!def) throw new Error(`unknown scenario: ${name}`);
+  const { entry, shares } = ctx;
+  const f = 1 + (riskLevel - 50) / 100 * 0.5;
+  return {
+    name, entry, shares,
+    tranches: def.rungs.map((r, i) => ({ frac: def.splits[i], limitPx: +(entry * (1 + r * f)).toFixed(2) })),
+    stopSchedule: def.stops.map(s => ({ from: s.from, stopPx: +(entry * (1 + s.pct * f)).toFixed(2) })),
+  };
+}
+export const SCENARIO_NAMES = Object.keys(SCENARIO_DEFS);
+
 // For each early step k, P(close > entry | price at step k < entry).
 export function conditionalRecovery(grid, entry, ks = [1, 2, 3]) {
   const steps = grid.length - 1, N = grid[0].length, close = grid[steps];

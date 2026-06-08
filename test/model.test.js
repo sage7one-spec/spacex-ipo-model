@@ -11,6 +11,7 @@ import {
   simulateDayOne,
   evaluatePolicy, sellAllAt,
   conditionalRecovery,
+  buildScenario,
 } from '../model.js';
 
 const polyEvent = JSON.parse(readFileSync(new URL('./fixtures/poly-event.json', import.meta.url)));
@@ -174,4 +175,26 @@ test('conditionalRecovery: P(green close | early dip) per step', () => {
 test('conditionalRecovery: null when no dips at that step', () => {
   const grid = [ [100, 100], [101, 102], [103, 104] ];
   assert.equal(conditionalRecovery(grid, 100, [1])[0].p, null);
+});
+
+test('buildScenario: balanced at neutral risk matches base table', () => {
+  const p = buildScenario('balanced', 50, { entry: 135, shares: 1111 });
+  assert.equal(p.name, 'balanced');
+  assert.deepEqual(p.tranches.map(t => t.frac), [0.25, 0.25, 0.25, 0.15]);
+  assert.equal(p.tranches[0].limitPx, +(135 * 1.04).toFixed(2)); // 140.40
+  assert.equal(p.stopSchedule[0].stopPx, +(135 * 0.94).toFixed(2)); // -6% => 126.90
+  // residual fraction = 1 - sum(splits) = 0.10
+  const laddered = p.tranches.reduce((a, t) => a + t.frac, 0);
+  assert.ok(Math.abs(1 - laddered - 0.10) < 1e-9);
+});
+
+test('buildScenario: higher riskLevel loosens stops and raises rungs', () => {
+  const lo = buildScenario('balanced', 0,   { entry: 135, shares: 1111 });
+  const hi = buildScenario('balanced', 100, { entry: 135, shares: 1111 });
+  assert.ok(hi.tranches[0].limitPx > lo.tranches[0].limitPx);       // rungs higher
+  assert.ok(hi.stopSchedule[0].stopPx < lo.stopSchedule[0].stopPx); // stop further below entry
+});
+
+test('buildScenario: unknown name throws', () => {
+  assert.throws(() => buildScenario('nope', 50, { entry: 135, shares: 1111 }));
 });
