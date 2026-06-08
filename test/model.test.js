@@ -10,6 +10,7 @@ import {
   disagreement, blendCenter,
   simulateDayOne,
   evaluatePolicy, sellAllAt,
+  conditionalRecovery,
 } from '../model.js';
 
 const polyEvent = JSON.parse(readFileSync(new URL('./fixtures/poly-event.json', import.meta.url)));
@@ -154,4 +155,23 @@ test('evaluatePolicy: within-step tie-break fills limit before stop', () => {
 test('sellAllAt returns mean column price × shares', () => {
   const paths = { grid: [ [100, 200], [0, 0] ], entry: 100 };
   assert.equal(sellAllAt(paths, 0, 10).Eproceeds, 1500); // mean(100,200)=150 × 10
+});
+
+test('conditionalRecovery: P(green close | early dip) per step', () => {
+  // 4 paths, 3 time-points (steps=2). entry 100. Look at k=1.
+  const grid = [
+    [100, 100, 100, 100], // open
+    [ 95,  98, 101,  90], // k=1: paths 0,1,3 dip below 100; path2 does not
+    [110,  97, 105,  90], // close: among dippers, 0 recovers (>100), 1 no, 3 no
+  ];
+  const out = conditionalRecovery(grid, 100, [1]);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].k, 1);
+  assert.equal(out[0].dips, 3);
+  assert.equal(out[0].p, 1 / 3);   // only path0 closes green
+});
+
+test('conditionalRecovery: null when no dips at that step', () => {
+  const grid = [ [100, 100], [101, 102], [103, 104] ];
+  assert.equal(conditionalRecovery(grid, 100, [1])[0].p, null);
 });

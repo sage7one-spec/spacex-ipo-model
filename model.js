@@ -211,3 +211,13 @@ export function sellAllAt(paths, stepIndex, shares) {
   const m = col.reduce((a, b) => a + b, 0) / col.length;
   return { Eproceeds: m * shares, avgSalePx: m };
 }
+
+// For each early step k, P(close > entry | price at step k < entry).
+export function conditionalRecovery(grid, entry, ks = [1, 2, 3]) {
+  const steps = grid.length - 1, N = grid[0].length, close = grid[steps];
+  return ks.filter(k => k >= 0 && k <= steps).map(k => {
+    let dips = 0, recover = 0;
+    for (let p = 0; p < N; p++) if (grid[k][p] < entry) { dips++; if (close[p] > entry) recover++; }
+    return { k, frac: k / steps, dips, p: dips ? recover / dips : null };
+  });
+}
