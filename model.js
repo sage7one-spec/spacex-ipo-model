@@ -220,8 +220,8 @@ export function sellAllAt(paths, stepIndex, shares) {
 // ---- Scenario presets (time-phased, risk-modulated) ---------------------
 
 const SCENARIO_DEFS = {
-  protect:  { core: 0.50, rungs: [0.02, 0.05, 0.09], splits: [0.20, 0.15, 0.10],
-              stops: [{ from: 0.25, pct: -0.05 }, { from: 0.60, pct: -0.03 }, { from: 0.85, pct: -0.015 }] },
+  protect:  { core: 0.40, rungs: [0.02, 0.05, 0.09], splits: [0.22, 0.18, 0.12],
+              stops: [{ from: 0.10, pct: -0.08 }, { from: 0.55, pct: -0.04 }, { from: 0.85, pct: -0.02 }] },
   balanced: { core: 0.30, rungs: [0.03, 0.07, 0.12], splits: [0.25, 0.20, 0.15],
               stops: [{ from: 0.35, pct: -0.07 }, { from: 0.70, pct: -0.04 }, { from: 0.90, pct: -0.02 }] },
   ride:     { core: 0.15, rungs: [0.06, 0.15, 0.28], splits: [0.25, 0.25, 0.20],

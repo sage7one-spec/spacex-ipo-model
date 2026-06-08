@@ -136,10 +136,15 @@
 
   <div class="row" style="gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0">
     <div id="scenBtns" style="display:flex;gap:8px"></div>
+    <div class="ctl" style="min-width:200px">
+      <label>Opening print <span class="val" id="openPxLbl">model</span></label>
+      <input type="number" id="openPx" min="1" step="0.01" placeholder="use model open">
+      <div class="hint">Profit-taking rungs hang off this price. Blank = the model's expected open; on IPO day, type the actual first print.</div>
+    </div>
     <div class="ctl" style="min-width:240px">
       <label>Protection aggressiveness <span class="val" id="riskLbl">50</span></label>
       <input type="range" id="risk" min="0" max="100" value="50">
-      <div class="hint">Left = tighter stops / lower rungs (protect). Right = looser stops / higher rungs (ride upside).</div>
+      <div class="hint">Left = bigger core sold at the open + tighter stops (protect). Right = smaller core, higher rungs (ride upside).</div>
     </div>
   </div>
 
@@ -185,7 +190,7 @@ const live = {
 };
 
 const state = { pos:150000, offer:135, shares:12.96e9, w:0.5, vol:BAKED_SNAPSHOT.vol.sliderVal, N:10000, steps:8,
-                scenario:'balanced', risk:50 };
+                scenario:'balanced', risk:50, openPx:null }; // openPx: actual IPO opening print; null = use the model's expected open
 let SEED = 20260611;
 let rng = mulberry32(SEED);
 function reseed(){ rng = mulberry32(SEED); }
@@ -272,7 +277,11 @@ function renderExecutionPlan(sim){
   const entry = sim.entry;
   const shares = Math.round(state.pos / entry);
   const paths = { grid: sim.grid, entry };
-  const ctx = { entry, shares };
+  // reference opening price: the model's expected (median) open, or the user's override
+  const modelOpen = pctile(sim.grid[0], 0.5);
+  const refPx = (state.openPx && state.openPx > 0) ? state.openPx : modelOpen;
+  setText('openPxLbl', state.openPx && state.openPx > 0 ? '$'+state.openPx : 'model $'+modelOpen.toFixed(0));
+  const ctx = { entry, shares, refPx };
 
   // scenario buttons (build once)
   const bw = document.getElementById('scenBtns');
@@ -295,14 +304,17 @@ function renderExecutionPlan(sim){
   const toClose = sellAllAt(paths, state.steps, shares);
   const basis = shares * entry;
 
-  // conditional-recovery sentence (first hour)
-  const rec = conditionalRecovery(sim.grid, entry, [1]);
+  // honest model read + conditional-recovery sentence, anchored to the opening reference
+  const rec = conditionalRecovery(sim.grid, refPx, [1]);
   const rn = document.getElementById('recoveryNote'); rn.textContent='';
+  rn.append(
+    el('b', { textContent: 'Model read: ' }),
+    txt(`SPCX is expected to open near $${refPx.toFixed(0)} — far above your $${entry} basis. In this model the single highest-expected-value move is to sell into the open; the laddered plans below trade a small expected haircut for upside if it keeps climbing, plus a stop that locks in most of the gain. `));
   if (rec[0] && rec[0].p != null){
     rn.append(
-      txt(`When SPCX dips below $${entry} early in the session, the model still closes green `),
+      txt(`When it pulls back below the opening reference early, it still closes back above it `),
       el('b', { textContent: (rec[0].p*100).toFixed(0)+'% of the time' }),
-      txt(` — which is why this plan gives the position room early and only tightens the stop into the close.`));
+      txt(` — which is why protection starts loose and tightens into the close.`));
   }
 
   // metric cards
@@ -311,7 +323,7 @@ function renderExecutionPlan(sim){
     {k:'Middle-90% proceeds', v:`${fmtMoney(r.p5)}–${fmtMoney(r.p95)}`, c:'neu', s:`median ${fmtMoney(r.medianProceeds)}`},
     {k:'Chance of a net loss', v:(r.pNetLoss*100).toFixed(0)+'%', c:r.pNetLoss>0.15?'neg':'pos', s:`proceeds below your $${basis.toLocaleString()} basis`},
     {k:`Chance of a sub-$${entry} sale`, v:(r.pSubBasisSale*100).toFixed(0)+'%', c:r.pSubBasisSale>0.2?'neg':'neu', s:`≈ ${Math.round(r.eSharesSubBasis)} sh on average`},
-    {k:'Sell mix', v:`${(r.mix.upsidePct*100).toFixed(0)}% up`, c:'neu', s:`${(r.mix.stopPct*100).toFixed(0)}% stop · ${(r.mix.closePct*100).toFixed(0)}% close`},
+    {k:'Sell mix', v:`${(r.mix.openPct*100).toFixed(0)}% open`, c:'neu', s:`${(r.mix.upsidePct*100).toFixed(0)}% rungs · ${(r.mix.stopPct*100).toFixed(0)}% stop · ${(r.mix.closePct*100).toFixed(0)}% close`},
     {k:'vs sell-all-at-open', v:fmtMoney(r.Eproceeds-atOpen.Eproceeds), c:r.Eproceeds>=atOpen.Eproceeds?'pos':'neg', s:`open avg $${atOpen.avgSalePx.toFixed(2)} · hold-to-close ${fmtMoney(toClose.Eproceeds)}`},
   ];
   const M = document.getElementById('execMetrics'); M.textContent='';
@@ -326,6 +338,11 @@ function renderExecutionPlan(sim){
   const headRow = el('tr', { style:'text-align:left;color:#9a8fc0' });
   ['#','Order','Shares','Sell limit','Sell stop','TIF'].forEach(h=> headRow.append(el('th', { textContent:h })));
   const tbody = el('tbody');
+  tbody.append(el('tr', { style:'border-top:1px solid #2a2150' },
+    el('td', { textContent:'C' }),
+    el('td', { textContent:t.coreAtOpen.type }),
+    el('td', { textContent:t.coreAtOpen.shares.toLocaleString() }),
+    el('td', { colSpan:3, textContent:t.coreAtOpen.note })));
   t.ladder.forEach(L=> tbody.append(el('tr', { style:'border-top:1px solid #2a2150' },
     el('td', { textContent:String(L.tranche) }),
     el('td', { textContent:L.type }),
@@ -355,7 +372,7 @@ function renderExecutionPlan(sim){
   // Day-16 comparison
   const sessionSigma = 0.02 + 0.18 * (state.vol / 100);
   const d16 = simulateDay16({ closes: sim.closes, dailySigma: sessionSigma, rng });
-  const r16 = evaluatePolicy({ grid: d16.grid, entry }, buildDay16Policy(entry, shares));
+  const r16 = evaluatePolicy({ grid: d16.grid, entry }, buildDay16Policy(entry, shares, d16.meanLevel16));
   const accessCost = r16.Eproceeds - r.Eproceeds; // + = Day-16 nets more (the flip costs you money too)
   const cn = document.getElementById('compareNote'); cn.textContent='';
   cn.append(
@@ -514,6 +531,7 @@ function bind(){
   g('vol').addEventListener('input',e=>{state.vol=+e.target.value;setText('volLbl',state.vol);render();});
   g('vol').value = state.vol; setText('volLbl', state.vol); // reflect realized-vol default
   g('risk').addEventListener('input', e=>{ state.risk=+e.target.value; setText('riskLbl', state.risk); render(); });
+  g('openPx').addEventListener('input', e=>{ const v=+e.target.value; state.openPx = (e.target.value==='' || !(v>0)) ? null : v; render(); });
   g('reroll').addEventListener('click',()=>{SEED=(SEED*1664525+1013904223)>>>0;reseed();render();});
   g('heatChart').addEventListener('mousemove',heatHover);
   g('heatChart').addEventListener('mouseleave',()=>{document.getElementById('heatTip').style.display='none';});
