@@ -156,10 +156,10 @@ export function evaluatePolicy(paths, policy) {
   const { grid } = paths;
   const steps = grid.length - 1;
   const N = grid[0].length;
-  const { shares, entry, tranches, stopSchedule } = policy;
+  const { shares, entry, coreAtOpenFrac = 0, tranches, stopSchedule } = policy;
   const basis = shares * entry;
   const proceeds = new Array(N);
-  let subCount = 0, subSharesSum = 0, netLoss = 0, upSum = 0, stopSum = 0, closeSum = 0;
+  let subCount = 0, subSharesSum = 0, netLoss = 0, openSum = 0, upSum = 0, stopSum = 0, closeSum = 0;
 
   const activeStop = (frac) => {
     let s = null;
@@ -169,6 +169,11 @@ export function evaluatePolicy(paths, policy) {
 
   for (let p = 0; p < N; p++) {
     let left = shares, value = 0, subShares = 0;
+    const open = grid[0][p];
+    if (coreAtOpenFrac > 0) {                                  // 0) market-sell the core at the open
+      const q = shares * coreAtOpenFrac;
+      value += q * open; if (open < entry) subShares += q; openSum += q; left -= q;
+    }
     const filled = new Array(tranches.length).fill(false);
     for (let k = 0; k <= steps && left > 1e-9; k++) {
       const price = grid[k][p], frac = k / steps;
@@ -199,7 +204,7 @@ export function evaluatePolicy(paths, policy) {
     Eproceeds: meanP, medianProceeds: pct(0.5), p5: pct(0.05), p95: pct(0.95),
     pNetLoss: netLoss / N, pSubBasisSale: subCount / N, eSharesSubBasis: subSharesSum / N,
     avgSalePx: meanP / shares,
-    mix: { upsidePct: upSum / tot, stopPct: stopSum / tot, closePct: closeSum / tot },
+    mix: { openPct: openSum / tot, upsidePct: upSum / tot, stopPct: stopSum / tot, closePct: closeSum / tot },
   };
 }
 
@@ -215,24 +220,30 @@ export function sellAllAt(paths, stepIndex, shares) {
 // ---- Scenario presets (time-phased, risk-modulated) ---------------------
 
 const SCENARIO_DEFS = {
-  protect:  { rungs: [0.03, 0.06, 0.10],        splits: [0.40, 0.30, 0.20],
-              stops: [{ from: 0.25, pct: -0.04 }, { from: 0.60, pct: -0.02 }, { from: 0.85, pct: -0.01 }] },
-  balanced: { rungs: [0.04, 0.08, 0.12, 0.18],  splits: [0.25, 0.25, 0.25, 0.15],
-              stops: [{ from: 0.40, pct: -0.06 }, { from: 0.70, pct: -0.04 }, { from: 0.90, pct: -0.02 }] },
-  ride:     { rungs: [0.10, 0.20, 0.30],        splits: [0.25, 0.25, 0.25],
-              stops: [{ from: 0.15, pct: -0.12 }, { from: 0.80, pct: -0.03 }] },
+  protect:  { core: 0.50, rungs: [0.02, 0.05, 0.09], splits: [0.20, 0.15, 0.10],
+              stops: [{ from: 0.25, pct: -0.05 }, { from: 0.60, pct: -0.03 }, { from: 0.85, pct: -0.015 }] },
+  balanced: { core: 0.30, rungs: [0.03, 0.07, 0.12], splits: [0.25, 0.20, 0.15],
+              stops: [{ from: 0.35, pct: -0.07 }, { from: 0.70, pct: -0.04 }, { from: 0.90, pct: -0.02 }] },
+  ride:     { core: 0.15, rungs: [0.06, 0.15, 0.28], splits: [0.25, 0.25, 0.20],
+              stops: [{ from: 0.20, pct: -0.12 }, { from: 0.80, pct: -0.04 }] },
 };
 
-// riskLevel 0..100 → modulation factor 0.75..1.25 (50 = neutral 1.0).
+// Upside rungs anchor ABOVE the reference opening price (refPx). The protective stop is
+// refPx-anchored but clamped to [entry, refPx] — never below the $135 basis, never above
+// the reference (which would imply an above-market stop). riskLevel 0..100: higher → higher
+// rungs + smaller core (ride the upside); lower → larger core sold at the open (protect).
 export function buildScenario(name, riskLevel, ctx) {
   const def = SCENARIO_DEFS[name];
   if (!def) throw new Error(`unknown scenario: ${name}`);
-  const { entry, shares } = ctx;
+  const { entry, shares, refPx } = ctx;
+  const ref = refPx ?? entry;
   const f = 1 + (riskLevel - 50) / 100 * 0.5;
+  const core = Math.max(0, Math.min(1, def.core * (2 - f)));
+  const stopAt = (pct) => +Math.min(Math.max(ref * (1 + pct * f), entry), ref).toFixed(2);
   return {
-    name, entry, shares,
-    tranches: def.rungs.map((r, i) => ({ frac: def.splits[i], limitPx: +(entry * (1 + r * f)).toFixed(2) })),
-    stopSchedule: def.stops.map(s => ({ from: s.from, stopPx: +(entry * (1 + s.pct * f)).toFixed(2) })),
+    name, entry, shares, refPx: ref, coreAtOpenFrac: core,
+    tranches: def.rungs.map((r, i) => ({ frac: def.splits[i], limitPx: +(ref * (1 + r * f)).toFixed(2) })),
+    stopSchedule: def.stops.map(s => ({ from: s.from, stopPx: stopAt(s.pct) })),
   };
 }
 export const SCENARIO_NAMES = Object.keys(SCENARIO_DEFS);
@@ -241,7 +252,7 @@ export const SCENARIO_NAMES = Object.keys(SCENARIO_DEFS);
 // (sell-limit-up / sell-stop-down) on its shares; equal stop levels across tranches
 // behave as one whole-position stop (matches evaluatePolicy). Residual = MOC/LOC.
 export function ticketsFromPolicy(policy, opts = {}) {
-  const { shares, tranches, stopSchedule } = policy;
+  const { shares, coreAtOpenFrac = 0, tranches, stopSchedule } = policy;
   const openMin = opts.openMin ?? 600;   // 10:00 ET (IPOs often open late; adjust to the real open)
   const closeMin = opts.closeMin ?? 960; // 16:00 ET
   const clock = (frac) => {
@@ -252,13 +263,14 @@ export function ticketsFromPolicy(policy, opts = {}) {
   };
   const r = (n) => Math.round(n);
   const firstStop = stopSchedule[0] || null;
+  const coreShares = r(shares * coreAtOpenFrac);
   const ladder = tranches.map((t, i) => ({
     tranche: i + 1, shares: r(shares * t.frac),
     limitPx: t.limitPx, stopPx: firstStop ? firstStop.stopPx : null,
     type: 'OCO', tif: 'Day',
   }));
-  const laddered = tranches.reduce((a, t) => a + t.frac, 0);
-  const residualShares = r(shares * (1 - laddered));
+  const used = coreAtOpenFrac + tranches.reduce((a, t) => a + t.frac, 0);
+  const residualShares = r(shares * (1 - used));
   const checkpoints = stopSchedule.map((s, i) => ({
     atFrac: s.from, clock: clock(s.from), stopPx: s.stopPx,
     action: i === 0
@@ -266,6 +278,10 @@ export function ticketsFromPolicy(policy, opts = {}) {
       : `Cancel the prior stop and re-enter it at $${s.stopPx} on all unsold shares.`,
   }));
   return {
+    coreAtOpen: {
+      shares: coreShares, type: 'MKT',
+      note: `Sell at Market (or a marketable limit) on the opening print to lock the in-the-money gain. This is the core of the plan when SPCX opens well above your $135 basis.`,
+    },
     ladder,
     residual: {
       shares: residualShares, type: 'MOC',
@@ -290,12 +306,16 @@ export function simulateDay16(cfg) {
   return { grid, level16, meanLevel16: level16.reduce((a, b) => a + b, 0) / N };
 }
 
-// A simple, sensible day-16 staged-exit policy (two limit rungs + ratcheting stop).
-export function buildDay16Policy(entry, shares) {
+// Day-16 staged exit, anchored to the day-16 reference level (refPx): a core sold on the
+// day-16 open, two limit rungs above it, residual to the day-18 close. Stops clamped to
+// [entry, refPx] like the Day-1 scenarios.
+export function buildDay16Policy(entry, shares, refPx) {
+  const ref = refPx ?? entry;
+  const stopAt = (pct) => +Math.min(Math.max(ref * (1 + pct), entry), ref).toFixed(2);
   return {
-    entry, shares,
-    tranches: [ { frac: 0.34, limitPx: +(entry * 1.05).toFixed(2) }, { frac: 0.33, limitPx: +(entry * 1.10).toFixed(2) } ],
-    stopSchedule: [ { from: 0.0, stopPx: +(entry * 0.94).toFixed(2) }, { from: 0.66, stopPx: +(entry * 0.98).toFixed(2) } ],
+    entry, shares, refPx: ref, coreAtOpenFrac: 0.34,
+    tranches: [ { frac: 0.33, limitPx: +(ref * 1.04).toFixed(2) }, { frac: 0.18, limitPx: +(ref * 1.09).toFixed(2) } ],
+    stopSchedule: [ { from: 0.0, stopPx: stopAt(-0.06) }, { from: 0.66, stopPx: stopAt(-0.02) } ],
   };
 }
 

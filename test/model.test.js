@@ -155,6 +155,17 @@ test('evaluatePolicy: within-step tie-break fills limit before stop', () => {
   assert.equal(r.mix.upsidePct, 1);
 });
 
+test('evaluatePolicy: coreAtOpenFrac sells at the open price', () => {
+  const grid = [ [100, 100], [120, 90], [130, 80] ];
+  const policy = { shares: 100, entry: 100, coreAtOpenFrac: 0.5, tranches: [], stopSchedule: [] };
+  const r = evaluatePolicy({ grid, entry: 100 }, policy);
+  // each path: 50 @ open 100 = 5000; residual 50 @ close → path0 50*130, path1 50*80
+  assert.equal(r.Eproceeds, (11500 + 9000) / 2);  // 10250
+  assert.equal(r.mix.openPct, 0.5);
+  assert.equal(r.mix.closePct, 0.5);
+  assert.equal(r.pSubBasisSale, 0.5);             // path1 close 80 < entry 100
+});
+
 test('sellAllAt returns mean column price × shares', () => {
   const paths = { grid: [ [100, 200], [0, 0] ], entry: 100 };
   assert.equal(sellAllAt(paths, 0, 10).Eproceeds, 1500); // mean(100,200)=150 × 10
@@ -179,47 +190,52 @@ test('conditionalRecovery: null when no dips at that step', () => {
   assert.equal(conditionalRecovery(grid, 100, [1])[0].p, null);
 });
 
-test('buildScenario: balanced at neutral risk matches base table', () => {
-  const p = buildScenario('balanced', 50, { entry: 135, shares: 1111 });
+test('buildScenario: balanced anchors rungs to refPx, not entry; has a core', () => {
+  const p = buildScenario('balanced', 50, { entry: 135, shares: 1111, refPx: 174 });
   assert.equal(p.name, 'balanced');
-  assert.deepEqual(p.tranches.map(t => t.frac), [0.25, 0.25, 0.25, 0.15]);
-  assert.equal(p.tranches[0].limitPx, +(135 * 1.04).toFixed(2)); // 140.40
-  assert.equal(p.stopSchedule[0].stopPx, +(135 * 0.94).toFixed(2)); // -6% => 126.90
-  // residual fraction = 1 - sum(splits) = 0.10
-  const laddered = p.tranches.reduce((a, t) => a + t.frac, 0);
-  assert.ok(Math.abs(1 - laddered - 0.10) < 1e-9);
+  assert.ok(p.coreAtOpenFrac > 0);
+  assert.equal(p.tranches.length, 3);
+  assert.equal(p.tranches[0].limitPx, +(174 * 1.03).toFixed(2)); // rung above refPx
+  assert.ok(p.tranches[0].limitPx > 135);
+  for (const s of p.stopSchedule) assert.ok(s.stopPx >= 135 && s.stopPx <= 174); // clamped [entry, refPx]
 });
 
-test('buildScenario: higher riskLevel loosens stops and raises rungs', () => {
-  const lo = buildScenario('balanced', 0,   { entry: 135, shares: 1111 });
-  const hi = buildScenario('balanced', 100, { entry: 135, shares: 1111 });
-  assert.ok(hi.tranches[0].limitPx > lo.tranches[0].limitPx);       // rungs higher
-  assert.ok(hi.stopSchedule[0].stopPx < lo.stopSchedule[0].stopPx); // stop further below entry
+test('buildScenario: stop clamps to <= refPx when refPx is below basis', () => {
+  const p = buildScenario('balanced', 50, { entry: 135, shares: 1111, refPx: 130 });
+  for (const s of p.stopSchedule) assert.ok(s.stopPx <= 130 + 1e-9);
+});
+
+test('buildScenario: higher riskLevel raises rungs and shrinks the core', () => {
+  const lo = buildScenario('balanced', 0,   { entry: 135, shares: 1111, refPx: 174 });
+  const hi = buildScenario('balanced', 100, { entry: 135, shares: 1111, refPx: 174 });
+  assert.ok(hi.tranches[0].limitPx > lo.tranches[0].limitPx);
+  assert.ok(hi.coreAtOpenFrac < lo.coreAtOpenFrac);
 });
 
 test('buildScenario: unknown name throws', () => {
-  assert.throws(() => buildScenario('nope', 50, { entry: 135, shares: 1111 }));
+  assert.throws(() => buildScenario('nope', 50, { entry: 135, shares: 1111, refPx: 174 }));
 });
 
-test('ticketsFromPolicy: OCO ladder + residual + checkpoints', () => {
-  const policy = buildScenario('balanced', 50, { entry: 135, shares: 1111 });
+test('ticketsFromPolicy: core-at-open + OCO ladder + residual + checkpoints', () => {
+  const policy = buildScenario('balanced', 50, { entry: 135, shares: 1111, refPx: 174 });
   const t = ticketsFromPolicy(policy);
-  assert.equal(t.ladder.length, 4);                       // one OCO per tranche
+  assert.ok(t.coreAtOpen.shares > 0);
+  assert.equal(t.coreAtOpen.type, 'MKT');
+  assert.equal(t.ladder.length, 3);
   assert.equal(t.ladder[0].type, 'OCO');
   assert.equal(t.ladder[0].tif, 'Day');
   assert.equal(t.ladder[0].limitPx, policy.tranches[0].limitPx);
-  assert.equal(t.ladder[0].stopPx, policy.stopSchedule[0].stopPx); // first scheduled stop
-  // share allocation: laddered shares + residual ≈ total position (rounding)
+  assert.equal(t.ladder[0].stopPx, policy.stopSchedule[0].stopPx);
   const laddered = t.ladder.reduce((a, r) => a + r.shares, 0);
-  assert.ok(Math.abs(laddered + t.residual.shares - 1111) <= t.ladder.length + 1);
+  assert.ok(Math.abs(t.coreAtOpen.shares + laddered + t.residual.shares - 1111) <= t.ladder.length + 2);
   assert.equal(t.residual.type, 'MOC');
   assert.equal(t.checkpoints.length, policy.stopSchedule.length);
-  assert.match(t.checkpoints[0].clock, /ET$/);            // wall-clock formatted
+  assert.match(t.checkpoints[0].clock, /ET$/);
 });
 
 test('ticketsFromPolicy: clock maps session fraction to ET window', () => {
-  const policy = buildScenario('balanced', 50, { entry: 135, shares: 1111 });
-  const t = ticketsFromPolicy(policy, { openMin: 600, closeMin: 960 }); // 10:00–16:00
+  const policy = buildScenario('balanced', 50, { entry: 135, shares: 1111, refPx: 174 });
+  const t = ticketsFromPolicy(policy, { openMin: 600, closeMin: 960 });
   assert.equal(t.flatBy, '4:00pm ET');
 });
 
@@ -233,19 +249,19 @@ test('simulateDay16: deterministic under seed; grid shape; mean ≈ start (drift
   assert.ok(Math.abs(a.meanLevel16 / 150 - 1) < 0.05); // drift-0 mean within 5% of start
 });
 
-test('buildDay16Policy: two rungs + a stop, residual to close', () => {
-  const p = buildDay16Policy(135, 1111);
+test('buildDay16Policy: core + rungs anchored to refPx, residual to close', () => {
+  const p = buildDay16Policy(135, 1111, 169);
+  assert.ok(p.coreAtOpenFrac > 0);
   assert.equal(p.tranches.length, 2);
-  assert.ok(p.tranches[0].limitPx > 135 && p.tranches[1].limitPx > p.tranches[0].limitPx);
-  assert.ok(p.stopSchedule.length >= 1);
-  const laddered = p.tranches.reduce((a, t) => a + t.frac, 0);
-  assert.ok(laddered < 1); // leaves a residual for the day-18 close
+  assert.ok(p.tranches[0].limitPx > 169 && p.tranches[1].limitPx > p.tranches[0].limitPx);
+  const used = p.coreAtOpenFrac + p.tranches.reduce((a, t) => a + t.frac, 0);
+  assert.ok(used < 1);
 });
 
 test('simulateDay16 grid is scorable by evaluatePolicy', () => {
   const closes = Array.from({ length: 2000 }, (_, i) => 140 + (i % 20)); // spread
   const d16 = simulateDay16({ closes, dailySigma: 0.03, rng: mulberry32(3) });
-  const r = evaluatePolicy({ grid: d16.grid, entry: 135 }, buildDay16Policy(135, 1111));
+  const r = evaluatePolicy({ grid: d16.grid, entry: 135 }, buildDay16Policy(135, 1111, d16.meanLevel16));
   assert.ok(r.Eproceeds > 0);
   assert.ok(r.pSubBasisSale >= 0 && r.pSubBasisSale <= 1);
 });
