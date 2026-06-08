@@ -79,8 +79,8 @@
   <div class="secrow"><h3>Inputs</h3><span class="ln"></span><button class="btn" id="reroll">&#8635; Re-run simulation</button></div>
   <div class="card">
     <div class="controls">
-      <div class="ctl"><label>Position size <span class="val" id="posLbl">$100,000</span></label>
-        <input type="number" id="pos" value="100000" min="1000" step="1000"><div class="hint" style="margin-top:6px">Shares ≈ position ÷ $135.</div></div>
+      <div class="ctl"><label>Position size <span class="val" id="posLbl">$150,000</span></label>
+        <input type="number" id="pos" value="150000" min="1000" step="1000"><div class="hint" style="margin-top:6px">Shares ≈ position ÷ $135.</div></div>
       <div class="ctl"><label>Allocation price (entry) <span class="val" id="offerLbl">$135</span></label>
         <input type="number" id="offer" value="135" min="1" step="1"><div class="hint" style="margin-top:6px">What Fidelity sells it to you for.</div></div>
       <div class="ctl"><label>Hyperliquid ⇄ Polymarket weight <span class="val" id="wLbl">50%</span></label>
@@ -128,6 +128,34 @@
     <p class="hint">The crowd-sourced curve that sets the close spread.</p>
     <div class="cbox short"><canvas id="survChart"></canvas></div></div>
 
+<section class="card" id="execSection" style="margin-top:16px">
+  <div class="secrow"><h2>Execution Plan — Day 1 (flat by close)</h2><span class="ln"></span></div>
+  <p class="hint">A scaled sell plan for your $135 allocation, scored against all 10,000 simulated paths.
+    Pick a posture; the levels, tickets, and odds re-compute live. Selling within Fidelity's first
+    <b>15 calendar days</b> is a "flip" (6-month IPO-access block, first offense) — see the Day-16 comparison below.</p>
+
+  <div class="row" style="gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0">
+    <div id="scenBtns" style="display:flex;gap:8px"></div>
+    <div class="ctl" style="min-width:240px">
+      <label>Protection aggressiveness <span class="val" id="riskLbl">50</span></label>
+      <input type="range" id="risk" min="0" max="100" value="50">
+      <div class="hint">Left = tighter stops / lower rungs (protect). Right = looser stops / higher rungs (ride upside).</div>
+    </div>
+  </div>
+
+  <div id="recoveryNote" class="verdict" style="margin:8px 0"></div>
+  <div class="metrics" id="execMetrics"></div>
+
+  <h3 style="margin-top:14px">Fidelity order tickets <span class="hint">(Active Trader Pro · OCO brackets · TIF Day)</span></h3>
+  <div id="ticketTable"></div>
+  <h3 style="margin-top:14px">Intraday checkpoints</h3>
+  <div id="checkpointList" class="hint"></div>
+
+  <h3 style="margin-top:16px">Day-1 (flip) vs Day-16 (clean) — what the IPO-access penalty costs</h3>
+  <div id="compareNote" class="verdict" style="margin:8px 0"></div>
+  <div class="cbox short"><canvas id="compareChart"></canvas></div>
+</section>
+
   <div class="foot">
     <b>How it works.</b> Each of 10,000 paths samples a Day-1 <i>closing</i> market cap from the live Polymarket distribution → a closing price (cap ÷ shares outstanding), then re-centers it toward the blend of the Hyperliquid <code>xyz:SPCX</code> mark and the Polymarket-implied price (weight slider). The opening print is drawn from historical mega-IPO open-to-close behavior, then a Brownian-bridge random walk (scaled by your intraday-volatility setting) connects the open to that close across 8 hourly steps. The fan shows the percentile envelope of those paths; the low/high charts show each path's intraday extremes.
     <br><br>
@@ -142,7 +170,9 @@
 
 <script type="module">
 import { mulberry32, parsePolymarketCurve, curveArrays, parseHyperliquid,
-         realizedVolFromCandles, medianCapT, disagreement, simulateDayOne } from './model.js';
+         realizedVolFromCandles, medianCapT, disagreement, simulateDayOne,
+         evaluatePolicy, sellAllAt, conditionalRecovery, buildScenario, SCENARIO_NAMES,
+         ticketsFromPolicy, simulateDay16, buildDay16Policy } from './model.js';
 import { BAKED_SNAPSHOT } from './snapshot.js';
 
 // Live data store — starts as the baked snapshot, replaced by fetchLive() in Task 10.
@@ -154,7 +184,8 @@ const live = {
   status: 'snapshot'   // 'live' | 'snapshot' | 'partial'
 };
 
-const state = { pos:100000, offer:135, shares:12.96e9, w:0.5, vol:BAKED_SNAPSHOT.vol.sliderVal, N:10000, steps:8 };
+const state = { pos:150000, offer:135, shares:12.96e9, w:0.5, vol:BAKED_SNAPSHOT.vol.sliderVal, N:10000, steps:8,
+                scenario:'balanced', risk:50 };
 let SEED = 20260611;
 let rng = mulberry32(SEED);
 function reseed(){ rng = mulberry32(SEED); }
@@ -229,6 +260,118 @@ function render(){
   drawClose(closes,entry);
   drawRange(lows,highs,entry);
   drawSurv(thresh,above);
+  renderExecutionPlan(sim);
+}
+
+let compareChartRef = null;
+function fmtMoney(x){ return '$'+Math.round(x).toLocaleString(); }
+function el(tag, props={}, ...kids){ const e=document.createElement(tag); Object.assign(e, props); for (const k of kids) e.append(k); return e; }
+function txt(s){ return document.createTextNode(s); }
+
+function renderExecutionPlan(sim){
+  const entry = sim.entry;
+  const shares = Math.round(state.pos / entry);
+  const paths = { grid: sim.grid, entry };
+  const ctx = { entry, shares };
+
+  // scenario buttons (build once)
+  const bw = document.getElementById('scenBtns');
+  if (!bw.dataset.built){
+    const labels = { protect:'Protect First', balanced:'Balanced', ride:'Ride the Upside' };
+    SCENARIO_NAMES.forEach(n=>{
+      const b = el('button', { className:'btn', textContent:labels[n] });
+      b.dataset.scen = n;
+      b.addEventListener('click', ()=>{ state.scenario=n; render(); });
+      bw.appendChild(b);
+    });
+    bw.dataset.built = '1';
+  }
+  [...bw.children].forEach(b=> b.style.outline = (b.dataset.scen===state.scenario) ? '2px solid #b58bff' : 'none');
+
+  // score the chosen scenario + the two baselines
+  const policy = buildScenario(state.scenario, state.risk, ctx);
+  const r = evaluatePolicy(paths, policy);
+  const atOpen = sellAllAt(paths, 0, shares);
+  const toClose = sellAllAt(paths, state.steps, shares);
+  const basis = shares * entry;
+
+  // conditional-recovery sentence (first hour)
+  const rec = conditionalRecovery(sim.grid, entry, [1]);
+  const rn = document.getElementById('recoveryNote'); rn.textContent='';
+  if (rec[0] && rec[0].p != null){
+    rn.append(
+      txt(`When SPCX dips below $${entry} early in the session, the model still closes green `),
+      el('b', { textContent: (rec[0].p*100).toFixed(0)+'% of the time' }),
+      txt(` — which is why this plan gives the position room early and only tightens the stop into the close.`));
+  }
+
+  // metric cards
+  const cards = [
+    {k:'Expected proceeds', v:fmtMoney(r.Eproceeds), c:r.Eproceeds>=basis?'pos':'neg', s:`${fmtPct(r.Eproceeds/basis-1)} vs $${basis.toLocaleString()} basis · avg $${r.avgSalePx.toFixed(2)}/sh`},
+    {k:'Middle-90% proceeds', v:`${fmtMoney(r.p5)}–${fmtMoney(r.p95)}`, c:'neu', s:`median ${fmtMoney(r.medianProceeds)}`},
+    {k:'Chance of a net loss', v:(r.pNetLoss*100).toFixed(0)+'%', c:r.pNetLoss>0.15?'neg':'pos', s:`proceeds below your $${basis.toLocaleString()} basis`},
+    {k:`Chance of a sub-$${entry} sale`, v:(r.pSubBasisSale*100).toFixed(0)+'%', c:r.pSubBasisSale>0.2?'neg':'neu', s:`≈ ${Math.round(r.eSharesSubBasis)} sh on average`},
+    {k:'Sell mix', v:`${(r.mix.upsidePct*100).toFixed(0)}% up`, c:'neu', s:`${(r.mix.stopPct*100).toFixed(0)}% stop · ${(r.mix.closePct*100).toFixed(0)}% close`},
+    {k:'vs sell-all-at-open', v:fmtMoney(r.Eproceeds-atOpen.Eproceeds), c:r.Eproceeds>=atOpen.Eproceeds?'pos':'neg', s:`open avg $${atOpen.avgSalePx.toFixed(2)} · hold-to-close ${fmtMoney(toClose.Eproceeds)}`},
+  ];
+  const M = document.getElementById('execMetrics'); M.textContent='';
+  cards.forEach(m=> M.append(el('div', { className:'metric' },
+    el('div', { className:'k', textContent:m.k }),
+    el('div', { className:'v '+m.c, textContent:m.v }),
+    el('div', { className:'s', textContent:m.s }))));
+
+  // ticket table
+  const t = ticketsFromPolicy(policy);
+  const tt = document.getElementById('ticketTable'); tt.textContent='';
+  const headRow = el('tr', { style:'text-align:left;color:#9a8fc0' });
+  ['#','Order','Shares','Sell limit','Sell stop','TIF'].forEach(h=> headRow.append(el('th', { textContent:h })));
+  const tbody = el('tbody');
+  t.ladder.forEach(L=> tbody.append(el('tr', { style:'border-top:1px solid #2a2150' },
+    el('td', { textContent:String(L.tranche) }),
+    el('td', { textContent:L.type }),
+    el('td', { textContent:L.shares.toLocaleString() }),
+    el('td', { textContent:'$'+L.limitPx }),
+    el('td', { textContent:L.stopPx!=null ? '$'+L.stopPx : '—' }),
+    el('td', { textContent:L.tif }))));
+  tbody.append(el('tr', { style:'border-top:1px solid #2a2150' },
+    el('td', { textContent:'R' }),
+    el('td', { textContent:t.residual.type }),
+    el('td', { textContent:t.residual.shares.toLocaleString() }),
+    el('td', { colSpan:3, textContent:t.residual.note })));
+  const table = el('table', { style:'width:100%;border-collapse:collapse;font-size:13px' },
+    el('thead', {}, headRow), tbody);
+  const tableNote = el('div', { className:'hint', style:'margin-top:6px' },
+    txt('Flat by '), el('b', { textContent:t.flatBy }),
+    txt('. Each numbered row is one OCO bracket in Active Trader Pro: the limit takes profit at the rung, the stop protects the same shares — whichever fills cancels the other.'));
+  tt.append(table, tableNote);
+
+  // checkpoints
+  const cl = document.getElementById('checkpointList'); cl.textContent='';
+  const ul = el('ul', { style:'margin:0;padding-left:18px' });
+  t.checkpoints.forEach(c=> ul.append(el('li', {}, el('b', { textContent:c.clock }), txt(' — '+c.action))));
+  ul.append(el('li', {}, el('b', { textContent:t.flatBy }), txt(' — confirm the position is fully closed.')));
+  cl.append(ul);
+
+  // Day-16 comparison
+  const sessionSigma = 0.02 + 0.18 * (state.vol / 100);
+  const d16 = simulateDay16({ closes: sim.closes, dailySigma: sessionSigma, rng });
+  const r16 = evaluatePolicy({ grid: d16.grid, entry }, buildDay16Policy(entry, shares));
+  const accessCost = r16.Eproceeds - r.Eproceeds; // + = Day-16 nets more (the flip costs you money too)
+  const cn = document.getElementById('compareNote'); cn.textContent='';
+  cn.append(
+    txt('Waiting to a clean Day-16 exit nets an expected '),
+    el('b', { textContent: fmtMoney(r16.Eproceeds) }),
+    txt(` vs ${fmtMoney(r.Eproceeds)} for this Day-1 plan — a difference of `),
+    el('b', { textContent: (accessCost>=0?'+':'')+fmtMoney(accessCost), style:'color:'+(accessCost>=0?'#28d17c':'#ff5c6c') }),
+    txt(`. So the Day-1 flip ${accessCost>=0?'costs':'gains'} you roughly that much in expected proceeds, on top of the 6-month IPO-access block. Day-16 also carries ~11 trading days of overnight/gap risk this single-session plan does not (its sub-$${entry} sale odds: ${(r16.pSubBasisSale*100).toFixed(0)}%).`));
+
+  const cc = document.getElementById('compareChart');
+  if (compareChartRef) compareChartRef.destroy();
+  compareChartRef = new Chart(cc, { type:'bar', data:{
+    labels:['Sell @ open','Day-1 plan','Hold→close','Day-16 clean'],
+    datasets:[{ label:'Expected proceeds', data:[atOpen.Eproceeds, r.Eproceeds, toClose.Eproceeds, r16.Eproceeds],
+      backgroundColor:['#5a4b8a','#b58bff','#5a4b8a','#28d17c'] }] },
+    options:{ plugins:{ legend:{ display:false } }, scales:{ y:{ ticks:{ callback:v=>'$'+(v/1000).toFixed(0)+'k' } } } } });
 }
 
 function updateLiveStrip(dis){
@@ -370,6 +513,7 @@ function bind(){
   g('shares').addEventListener('input', e=>{ state.shares=Math.max(1,(+e.target.value||12.96))*1e9; setText('shLbl', (state.shares/1e9).toFixed(2)+'B'); render(); });
   g('vol').addEventListener('input',e=>{state.vol=+e.target.value;setText('volLbl',state.vol);render();});
   g('vol').value = state.vol; setText('volLbl', state.vol); // reflect realized-vol default
+  g('risk').addEventListener('input', e=>{ state.risk=+e.target.value; setText('riskLbl', state.risk); render(); });
   g('reroll').addEventListener('click',()=>{SEED=(SEED*1664525+1013904223)>>>0;reseed();render();});
   g('heatChart').addEventListener('mousemove',heatHover);
   g('heatChart').addEventListener('mouseleave',()=>{document.getElementById('heatTip').style.display='none';});
