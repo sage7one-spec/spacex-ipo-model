@@ -13,6 +13,7 @@ import {
   conditionalRecovery,
   buildScenario,
   ticketsFromPolicy,
+  simulateDay16, buildDay16Policy,
 } from '../model.js';
 
 const polyEvent = JSON.parse(readFileSync(new URL('./fixtures/poly-event.json', import.meta.url)));
@@ -220,4 +221,31 @@ test('ticketsFromPolicy: clock maps session fraction to ET window', () => {
   const policy = buildScenario('balanced', 50, { entry: 135, shares: 1111 });
   const t = ticketsFromPolicy(policy, { openMin: 600, closeMin: 960 }); // 10:00–16:00
   assert.equal(t.flatBy, '4:00pm ET');
+});
+
+test('simulateDay16: deterministic under seed; grid shape; mean ≈ start (drift 0)', () => {
+  const closes = Array.from({ length: 4000 }, () => 150);
+  const a = simulateDay16({ closes, dailySigma: 0.03, rng: mulberry32(7) });
+  const b = simulateDay16({ closes, dailySigma: 0.03, rng: mulberry32(7) });
+  assert.deepEqual(a.grid[0].slice(0, 5), b.grid[0].slice(0, 5)); // reproducible
+  assert.equal(a.grid.length, 4);              // exitDays(3)+1 points
+  assert.equal(a.grid[0].length, 4000);
+  assert.ok(Math.abs(a.meanLevel16 / 150 - 1) < 0.05); // drift-0 mean within 5% of start
+});
+
+test('buildDay16Policy: two rungs + a stop, residual to close', () => {
+  const p = buildDay16Policy(135, 1111);
+  assert.equal(p.tranches.length, 2);
+  assert.ok(p.tranches[0].limitPx > 135 && p.tranches[1].limitPx > p.tranches[0].limitPx);
+  assert.ok(p.stopSchedule.length >= 1);
+  const laddered = p.tranches.reduce((a, t) => a + t.frac, 0);
+  assert.ok(laddered < 1); // leaves a residual for the day-18 close
+});
+
+test('simulateDay16 grid is scorable by evaluatePolicy', () => {
+  const closes = Array.from({ length: 2000 }, (_, i) => 140 + (i % 20)); // spread
+  const d16 = simulateDay16({ closes, dailySigma: 0.03, rng: mulberry32(3) });
+  const r = evaluatePolicy({ grid: d16.grid, entry: 135 }, buildDay16Policy(135, 1111));
+  assert.ok(r.Eproceeds > 0);
+  assert.ok(r.pSubBasisSale >= 0 && r.pSubBasisSale <= 1);
 });

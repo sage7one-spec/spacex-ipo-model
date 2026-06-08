@@ -276,6 +276,29 @@ export function ticketsFromPolicy(policy, opts = {}) {
   };
 }
 
+// Day-16 "clean" exit: drift each Day-1 close forward holdDays trading days (drift 0,
+// with an overnight-gap term), then build an exitDays-day grid for a staged exit.
+export function simulateDay16(cfg) {
+  const { closes, dailySigma, rng, holdDays = 11, exitDays = 3, gapMult = 0.5 } = cfg;
+  const N = closes.length, g = () => gaussFrom(rng);
+  const step = (s) => s * Math.exp(-0.5 * dailySigma * dailySigma + g() * dailySigma + g() * dailySigma * gapMult);
+  const level16 = new Array(N);
+  for (let p = 0; p < N; p++) { let s = closes[p]; for (let d = 0; d < holdDays; d++) s = step(s); level16[p] = s; }
+  const pts = exitDays + 1;
+  const grid = Array.from({ length: pts }, () => new Array(N));
+  for (let p = 0; p < N; p++) { let s = level16[p]; grid[0][p] = s; for (let k = 1; k < pts; k++) { s = step(s); grid[k][p] = s; } }
+  return { grid, level16, meanLevel16: level16.reduce((a, b) => a + b, 0) / N };
+}
+
+// A simple, sensible day-16 staged-exit policy (two limit rungs + ratcheting stop).
+export function buildDay16Policy(entry, shares) {
+  return {
+    entry, shares,
+    tranches: [ { frac: 0.34, limitPx: +(entry * 1.05).toFixed(2) }, { frac: 0.33, limitPx: +(entry * 1.10).toFixed(2) } ],
+    stopSchedule: [ { from: 0.0, stopPx: +(entry * 0.94).toFixed(2) }, { from: 0.66, stopPx: +(entry * 0.98).toFixed(2) } ],
+  };
+}
+
 // For each early step k, P(close > entry | price at step k < entry).
 export function conditionalRecovery(grid, entry, ks = [1, 2, 3]) {
   const steps = grid.length - 1, N = grid[0].length, close = grid[steps];
