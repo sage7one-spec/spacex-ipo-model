@@ -1,7 +1,22 @@
 # Day-1 Execution Plan — Design Spec
 
+> **v2 revision (2026-06-08, post-implementation):** During headless verification the original
+> **basis-anchored** ladder (§5: rungs at `entry*(1+rung)`) was found to *destroy* value — because the
+> model expects SPCX to open near ~$170, far above the $135 basis, so sell-limits at $140–159 dump
+> shares ~$15–34 below market. **Corrected design (shipped):** each scenario sells a **core at the open**
+> (market) to lock the in-the-money gain, ladders the remainder at rungs **above a reference opening
+> price** (`refPx` — the model's expected open, or an editable input set to the actual first print),
+> and protects with a stop **clamped to `[entry, refPx]`** (never below the $135 basis, never above
+> the market). `evaluatePolicy` gained a `coreAtOpenFrac` and an `openPct` mix bucket; `buildScenario`
+> and `buildDay16Policy` take `refPx`; `ticketsFromPolicy` emits a core market row. The three scenarios
+> now span the **core-at-open size** (Protect 40% / Balanced 30% / Ride 15%). Honest result recorded in
+> the UI: in this model **selling into the open is the highest-expected-value move**; the laddered
+> scenarios trade a small expected haircut for upside + a defined floor, and the ~17% sub-$135 sale
+> probability is largely irreducible (≈ P(SPCX below basis at open or close)). Sections 5–7 below
+> describe the superseded basis-anchored design; read them together with this note.
+
 **Date:** 2026-06-08
-**Status:** Approved (brainstorming) — pending spec review
+**Status:** Implemented (v2, open-anchored) on branch `feat/day1-execution-plan`
 **Builds on:** the existing live Monte-Carlo model (`model.js` / `index.html`), which already
 produces a 10,000-path × 8-step intraday price grid for SpaceX's Day-1 session.
 

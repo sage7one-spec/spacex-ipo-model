@@ -30,6 +30,30 @@ data") — a shared link never shows a blank or broken page.
 - `snapshot.js` — `BAKED_SNAPSHOT` fallback data.
 - `test/` — unit tests + captured API fixtures.
 
+## Execution Plan (Day-1)
+
+The **Execution Plan** section turns the simulated price grid into a scaled sell plan for the $135
+allocation, scored against all 10,000 paths:
+
+- **Reference-anchored, not basis-anchored.** SPCX is expected to open far above $135, so profit-taking
+  rungs hang off a **reference opening price** (the model's expected open, or an editable input you set
+  to the actual first print on IPO day) — not the cost basis. Each scenario sells a **core at the open**
+  (market) to lock the in-the-money gain, ladders the rest **above** the reference, and protects with a
+  **stop clamped to `[ $135 basis , reference ]`** (never below your basis, never above the market).
+- **Three postures** — Protect First / Balanced / Ride the Upside — span the core-at-open size
+  (more core = more locked at the open; less core = more held for upside behind the stop). A
+  protection-aggressiveness slider reshapes them and everything re-scores live.
+- **Fidelity tickets** — a core market order at the open, OCO brackets (sell-limit-up / sell-stop-down)
+  per tranche, an MOC/LOC residual, and manual stop-escalation checkpoints with ET times (Active Trader Pro).
+- **Outcome stats** vs. sell-at-open and hold-to-close baselines, plus a quantitative **Day-1 (flip)
+  vs Day-16 (clean)** comparison showing the dollar cost of the 15-day flip rule.
+
+**Honest read:** in this model the single highest-expected-value Day-1 move is to sell into the open;
+the laddered scenarios trade a small expected haircut for upside participation plus a defined floor.
+The model fills stops *at* the stop price, so real gap-through risk on the "hold more" scenarios is
+understated. All scoring lives in pure, unit-tested functions in `model.js`
+(`evaluatePolicy`, `buildScenario`, `ticketsFromPolicy`, `simulateDay16`, …).
+
 ## Caveats
 
 Both sources are **proxies** for the real stock: the Hyperliquid perp is synthetic with basis risk
