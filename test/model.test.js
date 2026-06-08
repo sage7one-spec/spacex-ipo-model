@@ -9,6 +9,7 @@ import {
   realizedVolFromCandles,
   disagreement, blendCenter,
   simulateDayOne,
+  evaluatePolicy, sellAllAt,
 } from '../model.js';
 
 const polyEvent = JSON.parse(readFileSync(new URL('./fixtures/poly-event.json', import.meta.url)));
@@ -97,4 +98,60 @@ test('simulateDayOne produces well-formed, deterministic, blend-responsive outpu
   const lowHL  = simulateDayOne({ ...base, hlMark: 250, w: 0.0, rng: mulberry32(1) });
   const highHL = simulateDayOne({ ...base, hlMark: 250, w: 1.0, rng: mulberry32(1) });
   assert.ok(highHL.center > lowHL.center, 'w=1 should pull center toward hlMark=250');
+});
+
+test('evaluatePolicy: pure limit ladder fills at rungs, no stop', () => {
+  // 2 paths, 3 time-points. Path0 rises through both rungs; Path1 never reaches rung2.
+  const grid = [
+    [100, 100],   // k=0 (open)
+    [110, 105],   // k=1
+    [120, 104],   // k=2 (close)
+  ];
+  const policy = { shares: 100, entry: 100,
+    tranches: [ { frac: 0.5, limitPx: 105 }, { frac: 0.5, limitPx: 115 } ],
+    stopSchedule: [] };
+  const r = evaluatePolicy({ grid, entry: 100 }, policy);
+  // Path0: 50@105 (k=1) + 50@115 (k=2) = 5250+5750 = 11000
+  // Path1: 50@105 (k=1) + residual 50@close 104 = 5250+5200 = 10450
+  assert.equal(r.Eproceeds, (11000 + 10450) / 2);     // 10725
+  assert.equal(r.pSubBasisSale, 0);                   // entry 100; no sale below 100
+  assert.equal(r.mix.closePct, 50 / 200);             // only Path1's residual 50 of 200 total shares
+});
+
+test('evaluatePolicy: stop sweeps remaining position below entry; counts sub-basis', () => {
+  const grid = [
+    [100, 100],
+    [ 96,  98],   // k=1: Path0 hits stop 97
+    [102, 110],   // k=2 close
+  ];
+  const policy = { shares: 100, entry: 100,
+    tranches: [ { frac: 0.5, limitPx: 130 } ],         // never fills
+    stopSchedule: [ { from: 0.0, stopPx: 97 } ] };
+  const r = evaluatePolicy({ grid, entry: 100 }, policy);
+  // Path0: stop fires k=1, all 100 @97 = 9700; 100 sub-basis shares.
+  // Path1: never <=97, never >=130 → residual 100 @ close 110 = 11000; 0 sub-basis.
+  assert.equal(r.Eproceeds, (9700 + 11000) / 2);       // 10350
+  assert.equal(r.pSubBasisSale, 0.5);
+  assert.equal(r.eSharesSubBasis, 50);                 // (100 + 0)/2
+  assert.equal(r.pNetLoss, 0.5);                       // basis 10000; Path0 9700 < 10000
+});
+
+test('evaluatePolicy: within-step tie-break fills limit before stop', () => {
+  // Stop activates only at frac >= 0.5 (from:0.5), so it is dormant at k=0.
+  // At k=1 (frac=1.0), price 115 satisfies BOTH limit (115 >= 110) AND stop (115 <= 120)
+  // simultaneously — a genuine same-step collision.
+  // Limits fill first → 100@110=11000; if the stop ran first it would be 100@120=12000.
+  // Asserting 11000 proves limits fill before the stop within the same step.
+  const grid = [ [100], [115] ];
+  const policy = { shares: 100, entry: 100,
+    tranches: [ { frac: 1.0, limitPx: 110 } ],
+    stopSchedule: [ { from: 0.5, stopPx: 120 } ] };
+  const r = evaluatePolicy({ grid, entry: 100 }, policy);
+  assert.equal(r.Eproceeds, 100 * 110);   // limit price, not the stop price
+  assert.equal(r.mix.upsidePct, 1);
+});
+
+test('sellAllAt returns mean column price × shares', () => {
+  const paths = { grid: [ [100, 200], [0, 0] ], entry: 100 };
+  assert.equal(sellAllAt(paths, 0, 10).Eproceeds, 1500); // mean(100,200)=150 × 10
 });

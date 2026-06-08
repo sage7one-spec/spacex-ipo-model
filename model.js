@@ -144,3 +144,70 @@ export function simulateDayOne(cfg) {
   }
   return { closes, lows, highs, grid, entry: offer, center, polyMedPerShare };
 }
+
+// ---- Execution layer (pure, tested) -------------------------------------
+
+// Score one execution policy against a simulated open→close price grid.
+//   paths : { grid: number[steps+1][N], entry }     (grid-length-agnostic)
+//   policy: { shares, entry, tranches:[{frac,limitPx}], stopSchedule:[{from,stopPx}] }
+// Tie-break: within a step, upside limits fill BEFORE the protective stop.
+// The stop covers the whole remaining position. Residual sells at the close price.
+export function evaluatePolicy(paths, policy) {
+  const { grid } = paths;
+  const steps = grid.length - 1;
+  const N = grid[0].length;
+  const { shares, entry, tranches, stopSchedule } = policy;
+  const basis = shares * entry;
+  const proceeds = new Array(N);
+  let subCount = 0, subSharesSum = 0, netLoss = 0, upSum = 0, stopSum = 0, closeSum = 0;
+
+  const activeStop = (frac) => {
+    let s = null;
+    for (const e of stopSchedule) if (e.from <= frac + 1e-9) s = e.stopPx;
+    return s;
+  };
+
+  for (let p = 0; p < N; p++) {
+    let left = shares, value = 0, subShares = 0;
+    const filled = new Array(tranches.length).fill(false);
+    for (let k = 0; k <= steps && left > 1e-9; k++) {
+      const price = grid[k][p], frac = k / steps;
+      for (let t = 0; t < tranches.length; t++) {            // A) upside limits first
+        if (filled[t] || price < tranches[t].limitPx) continue;
+        const qty = Math.min(left, shares * tranches[t].frac);
+        value += qty * tranches[t].limitPx; left -= qty; upSum += qty; filled[t] = true;
+      }
+      const stop = activeStop(frac);                          // B) protective stop on remainder
+      if (stop != null && left > 1e-9 && price <= stop) {
+        value += left * stop; if (stop < entry) subShares += left; stopSum += left; left = 0;
+      }
+    }
+    if (left > 1e-9) {                                        // C) forced close-out at close
+      const close = grid[steps][p];
+      value += left * close; if (close < entry) subShares += left; closeSum += left; left = 0;
+    }
+    proceeds[p] = value;
+    if (subShares > 1e-9) { subCount++; subSharesSum += subShares; }
+    if (value < basis - 1e-6) netLoss++;
+  }
+
+  const sorted = [...proceeds].sort((a, b) => a - b);
+  const pct = (q) => { const i = (N - 1) * q, lo = Math.floor(i), hi = Math.ceil(i); return sorted[lo] + (sorted[hi] - sorted[lo]) * (i - lo); };
+  const meanP = proceeds.reduce((a, b) => a + b, 0) / N;
+  const tot = N * shares;
+  return {
+    Eproceeds: meanP, medianProceeds: pct(0.5), p5: pct(0.05), p95: pct(0.95),
+    pNetLoss: netLoss / N, pSubBasisSale: subCount / N, eSharesSubBasis: subSharesSum / N,
+    avgSalePx: meanP / shares,
+    mix: { upsidePct: upSum / tot, stopPct: stopSum / tot, closePct: closeSum / tot },
+  };
+}
+
+// Baseline: sell the entire position at one grid column (e.g. open or close).
+// Returns only { Eproceeds, avgSalePx } — a partial shape vs evaluatePolicy, sufficient
+// for baseline comparison (do not spread it into an evaluatePolicy-shaped consumer).
+export function sellAllAt(paths, stepIndex, shares) {
+  const col = paths.grid[stepIndex];
+  const m = col.reduce((a, b) => a + b, 0) / col.length;
+  return { Eproceeds: m * shares, avgSalePx: m };
+}
