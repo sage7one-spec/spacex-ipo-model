@@ -148,8 +148,8 @@ export function simulateDayOne(cfg) {
 // ---- Execution layer (pure, tested) -------------------------------------
 
 // Score one execution policy against a simulated open→close price grid.
-//   paths : { grid: number[steps+1][N], entry }     (grid-length-agnostic)
-//   policy: { shares, entry, tranches:[{frac,limitPx}], stopSchedule:[{from,stopPx}] }
+//   paths : { grid: number[steps+1][N] }            (grid-length-agnostic; entry/shares come from policy)
+//   policy: { shares, entry, coreAtOpenFrac?, tranches:[{frac,limitPx}], stopSchedule:[{from,stopPx}] }
 // Tie-break: within a step, upside limits fill BEFORE the protective stop.
 // The stop covers the whole remaining position. Residual sells at the close price.
 export function evaluatePolicy(paths, policy) {
@@ -269,8 +269,8 @@ export function ticketsFromPolicy(policy, opts = {}) {
     limitPx: t.limitPx, stopPx: firstStop ? firstStop.stopPx : null,
     type: 'OCO', tif: 'Day',
   }));
-  const used = coreAtOpenFrac + tranches.reduce((a, t) => a + t.frac, 0);
-  const residualShares = r(shares * (1 - used));
+  // reconcile the residual against the rounded rows so the ticket table totals exactly `shares`
+  const residualShares = Math.max(0, Math.round(shares) - coreShares - ladder.reduce((a, L) => a + L.shares, 0));
   const checkpoints = stopSchedule.map((s, i) => ({
     atFrac: s.from, clock: clock(s.from), stopPx: s.stopPx,
     action: i === 0

@@ -311,7 +311,7 @@ function renderExecutionPlan(sim){
   const rn = document.getElementById('recoveryNote'); rn.textContent='';
   rn.append(
     el('b', { textContent: 'Model read: ' }),
-    txt(`SPCX is expected to open near $${refPx.toFixed(0)} — far above your $${entry} basis. In this model the single highest-expected-value move is to sell into the open; the laddered plans below trade a small expected haircut for upside if it keeps climbing, plus a stop that locks in most of the gain. `));
+    txt(`SPCX is expected to open near $${refPx.toFixed(0)} — far above your $${entry} basis. In this model the single highest-expected-value move is to sell into the open; the laddered plans below trade a small expected haircut for upside if it keeps climbing, plus a stop that locks in most of the gain. Counter-intuitively, the more protective postures can show a slightly higher chance of a net loss — selling a larger core into the rare sub-$${entry} open locks that loss in, while holding more lets it recover by the close. Their real edge is a higher stop floor and lower variance, not a lower loss probability. `));
   if (rec[0] && rec[0].p != null){
     rn.append(
       txt(`When it pulls back below the opening reference early, it still closes back above it `),
