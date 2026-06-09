@@ -13,7 +13,11 @@ import {
   conditionalRecovery,
   buildScenario,
   ticketsFromPolicy,
-  simulateDay16, buildDay16Policy,
+  netDollars, fmtNet,
+  simulateBottomFeed,
+  bottomFeedTicket,
+  MEGA_IPO_POSTIPO_CURVE, simulatePostIPO,
+  postIpoBands,
 } from '../model.js';
 
 const polyEvent = JSON.parse(readFileSync(new URL('./fixtures/poly-event.json', import.meta.url)));
@@ -239,29 +243,135 @@ test('ticketsFromPolicy: clock maps session fraction to ET window', () => {
   assert.equal(t.flatBy, '4:00pm ET');
 });
 
-test('simulateDay16: deterministic under seed; grid shape; mean ≈ start (drift 0)', () => {
-  const closes = Array.from({ length: 4000 }, () => 150);
-  const a = simulateDay16({ closes, dailySigma: 0.03, rng: mulberry32(7) });
-  const b = simulateDay16({ closes, dailySigma: 0.03, rng: mulberry32(7) });
-  assert.deepEqual(a.grid[0].slice(0, 5), b.grid[0].slice(0, 5)); // reproducible
-  assert.equal(a.grid.length, 4);              // exitDays(3)+1 points
-  assert.equal(a.grid[0].length, 4000);
-  assert.ok(Math.abs(a.meanLevel16 / 150 - 1) < 0.05); // drift-0 mean within 5% of start
+test('netDollars subtracts the $100k basis by default', () => {
+  assert.equal(netDollars(125000), 25000);
+  assert.equal(netDollars(88000), -12000);
+  assert.equal(netDollars(100000), 0);
+  assert.equal(netDollars(150000, 150000), 0);
 });
 
-test('buildDay16Policy: core + rungs anchored to refPx, residual to close', () => {
-  const p = buildDay16Policy(135, 1111, 169);
-  assert.ok(p.coreAtOpenFrac > 0);
-  assert.equal(p.tranches.length, 2);
-  assert.ok(p.tranches[0].limitPx > 169 && p.tranches[1].limitPx > p.tranches[0].limitPx);
-  const used = p.coreAtOpenFrac + p.tranches.reduce((a, t) => a + t.frac, 0);
-  assert.ok(used < 1);
+test('fmtNet renders signed absolute dollars with thousands separators', () => {
+  assert.equal(fmtNet(25000), '+$25,000');
+  assert.equal(fmtNet(-12300), '-$12,300');
+  assert.equal(fmtNet(0), '$0');
+  assert.equal(fmtNet(-0.4), '$0');      // rounds to zero → no sign
+  assert.equal(fmtNet(999.6), '+$1,000');
 });
 
-test('simulateDay16 grid is scorable by evaluatePolicy', () => {
-  const closes = Array.from({ length: 2000 }, (_, i) => 140 + (i % 20)); // spread
-  const d16 = simulateDay16({ closes, dailySigma: 0.03, rng: mulberry32(3) });
-  const r = evaluatePolicy({ grid: d16.grid, entry: 135 }, buildDay16Policy(135, 1111, d16.meanLevel16));
-  assert.ok(r.Eproceeds > 0);
-  assert.ok(r.pSubBasisSale >= 0 && r.pSubBasisSale <= 1);
+// Helper: build a paths object from explicit per-step price columns (one path).
+function gridFromPath(prices) { return { grid: prices.map(px => [px]) }; }
+
+test('simulateBottomFeed: no step <= limit → $0 net, capital preserved', () => {
+  const paths = gridFromPath([200, 190, 180, 170]); // never dips to 135
+  const r = simulateBottomFeed(paths, { limitPx: 135, capital: 100000, targetPct: 0.06, stopPct: 0.05 });
+  assert.equal(r.pFill, 0);
+  assert.equal(r.pNoFill, 1);
+  assert.equal(r.nets[0], 0);
+  assert.equal(r.net.mean, 0);
+  assert.equal(r.mix.noFillPct, 1);
+});
+
+test('simulateBottomFeed: dip to limit then rally → exit at target (+6%)', () => {
+  const paths = gridFromPath([150, 135, 138, 145]);
+  const r = simulateBottomFeed(paths, { limitPx: 135, capital: 100000, targetPct: 0.06, stopPct: 0.05 });
+  const shares = 100000 / 135, target = 135 * 1.06;
+  assert.equal(r.pFill, 1);
+  assert.ok(Math.abs(r.nets[0] - (shares * target - 100000)) < 1e-6);
+  assert.equal(r.mix.targetPct, 1);
+});
+
+test('simulateBottomFeed: dip to limit then break down → exit at stop (-5%)', () => {
+  const paths = gridFromPath([150, 135, 130, 120]); // stop = 128.25 hit at step 3
+  const r = simulateBottomFeed(paths, { limitPx: 135, capital: 100000, targetPct: 0.06, stopPct: 0.05 });
+  const shares = 100000 / 135, stop = 135 * 0.95;
+  assert.ok(Math.abs(r.nets[0] - (shares * stop - 100000)) < 1e-6);
+  assert.equal(r.mix.stopPct, 1);
+});
+
+test('simulateBottomFeed: fill but neither target nor stop → residual sells at close', () => {
+  const paths = gridFromPath([150, 135, 137, 138]); // never reaches 143.10 or 128.25
+  const r = simulateBottomFeed(paths, { limitPx: 135, capital: 100000, targetPct: 0.06, stopPct: 0.05 });
+  const shares = 100000 / 135;
+  assert.ok(Math.abs(r.nets[0] - (shares * 138 - 100000)) < 1e-6);
+  assert.equal(r.mix.closePct, 1);
+});
+
+test('simulateBottomFeed: mix fractions sum to 1', () => {
+  const paths = { grid: [
+    [200, 150, 150, 150], // no fill
+    [135, 135, 130, 120], // fill at step0; step3=120 <= 128.25 stop
+  ].reduce((cols, path) => { path.forEach((px, k) => { (cols[k] ||= []).push(px); }); return cols; }, []) };
+  const r = simulateBottomFeed(paths, { limitPx: 135, capital: 100000, targetPct: 0.06, stopPct: 0.05 });
+  const m = r.mix;
+  assert.ok(Math.abs((m.targetPct + m.stopPct + m.closePct + m.noFillPct) - 1) < 1e-9);
+});
+
+test('bottomFeedTicket: buy-limit + OCO bracket + MOC residual', () => {
+  const t = bottomFeedTicket({ limitPx: 135, capital: 100000, targetPct: 0.06, stopPct: 0.05 });
+  assert.equal(t.entry.type, 'BUY LIMIT');
+  assert.equal(t.entry.shares, Math.round(100000 / 135)); // 741
+  assert.equal(t.entry.limitPx, 135);
+  assert.equal(t.bracket.sellLimitPx, +(135 * 1.06).toFixed(2)); // 143.10
+  assert.equal(t.bracket.sellStopPx, +(135 * 0.95).toFixed(2));  // 128.25
+  assert.equal(t.residual.type, 'MOC');
+  assert.ok(t.entry.note.includes('keep'));   // no-fill safety messaging
+});
+
+test('simulatePostIPO: deterministic; grid shape (days+1)×N; grid[0] === closes', () => {
+  const closes = [100, 120, 140, 160, 180];
+  const a = simulatePostIPO({ closes, dailySigma: 0.03, rng: mulberry32(7), days: 20 });
+  const b = simulatePostIPO({ closes, dailySigma: 0.03, rng: mulberry32(7), days: 20 });
+  assert.equal(a.grid.length, 21);
+  assert.equal(a.grid[0].length, closes.length);
+  for (let p = 0; p < closes.length; p++) assert.equal(a.grid[0][p], closes[p]);
+  assert.equal(a.grid[20][0], b.grid[20][0]); // same seed → identical
+});
+
+test('simulatePostIPO: martingale (no drift, no anchor) keeps mean ≈ start mean', () => {
+  const closes = Array.from({ length: 4000 }, () => 165);
+  const r = simulatePostIPO({ closes, dailySigma: 0.03, rng: mulberry32(11), days: 20 });
+  const startMean = 165;
+  const endMean = r.grid[20].reduce((a, b) => a + b, 0) / closes.length;
+  assert.ok(Math.abs(endMean / startMean - 1) < 0.03, `endMean ${endMean} drifted from ${startMean}`);
+});
+
+test('simulatePostIPO: variance grows with horizon', () => {
+  const closes = Array.from({ length: 4000 }, () => 165);
+  const r = simulatePostIPO({ closes, dailySigma: 0.03, rng: mulberry32(13), days: 20 });
+  const sd = (col) => { const m = col.reduce((a, b) => a + b, 0) / col.length; return Math.sqrt(col.reduce((a, b) => a + (b - m) ** 2, 0) / col.length); };
+  assert.ok(sd(r.grid[20]) > sd(r.grid[5]), 'day-20 spread should exceed day-5 spread');
+});
+
+test('simulatePostIPO: Polymarket anchor pulls the terminal toward the implied level', () => {
+  const closes = Array.from({ length: 4000 }, () => 165);
+  const thresh = [1.0, 1.6, 2.2], above = [99, 50, 1], shares = 12.96e9; // median cap ~1.6T → ~$123/share
+  const free = simulatePostIPO({ closes, dailySigma: 0.03, rng: mulberry32(21), days: 20, anchorStrength: 0 });
+  const anch = simulatePostIPO({ closes, dailySigma: 0.03, rng: mulberry32(21), days: 20, polyTerminal: { thresh, above, shares }, anchorStrength: 0.6 });
+  const med = (col) => [...col].sort((a, b) => a - b)[Math.floor(col.length / 2)];
+  assert.ok(med(anch.grid[20]) < med(free.grid[20]), 'anchored terminal should sit below the free-walk terminal');
+});
+
+test('MEGA_IPO_POSTIPO_CURVE is a 21-point normalized level curve starting at 1.0', () => {
+  assert.equal(MEGA_IPO_POSTIPO_CURVE.length, 21);
+  assert.equal(MEGA_IPO_POSTIPO_CURVE[0], 1.0);
+});
+
+test('postIpoBands: ordered percentile bands per day + pBelow in [0,1]', () => {
+  const closes = Array.from({ length: 3000 }, () => 165);
+  const r = simulatePostIPO({ closes, dailySigma: 0.03, rng: mulberry32(9), days: 20 });
+  const bands = postIpoBands(r.grid, 135);
+  assert.equal(bands.length, 21);
+  for (const b of bands) {
+    assert.ok(b.p5 <= b.p25 && b.p25 <= b.median && b.median <= b.p75 && b.p75 <= b.p95);
+    assert.ok(b.pBelow >= 0 && b.pBelow <= 1);
+  }
+  assert.equal(bands[0].day, 0);
+  assert.equal(bands[20].day, 20);
+});
+
+test('postIpoBands: pBelow grows with horizon for a martingale started above the level', () => {
+  const closes = Array.from({ length: 4000 }, () => 165);
+  const r = simulatePostIPO({ closes, dailySigma: 0.03, rng: mulberry32(17), days: 20 });
+  const bands = postIpoBands(r.grid, 135);
+  assert.ok(bands[20].pBelow >= bands[5].pBelow, 'later-day underwater prob should not shrink');
 });

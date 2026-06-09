@@ -292,31 +292,74 @@ export function ticketsFromPolicy(policy, opts = {}) {
   };
 }
 
-// Day-16 "clean" exit: drift each Day-1 close forward holdDays trading days (drift 0,
-// with an overnight-gap term), then build an exitDays-day grid for a staged exit.
-export function simulateDay16(cfg) {
-  const { closes, dailySigma, rng, holdDays = 11, exitDays = 3, gapMult = 0.5 } = cfg;
-  const N = closes.length, g = () => gaussFrom(rng);
-  const step = (s) => s * Math.exp(-0.5 * dailySigma * dailySigma + g() * dailySigma + g() * dailySigma * gapMult);
-  const level16 = new Array(N);
-  for (let p = 0; p < N; p++) { let s = closes[p]; for (let d = 0; d < holdDays; d++) s = step(s); level16[p] = s; }
-  const pts = exitDays + 1;
-  const grid = Array.from({ length: pts }, () => new Array(N));
-  for (let p = 0; p < N; p++) { let s = level16[p]; grid[0][p] = s; for (let k = 1; k < pts; k++) { s = step(s); grid[k][p] = s; } }
-  return { grid, level16, meanLevel16: level16.reduce((a, b) => a + b, 0) / N };
+// Fidelity ATP order set for Case B: a buy-limit at/below the limit, an OCO bracket
+// attached on fill, and an MOC/LOC residual. Mirrors the bottom-feeder execution.
+export function bottomFeedTicket(cfg) {
+  const px = (n) => n.toFixed(2);
+  const { limitPx = 135, capital = 100000, targetPct = 0.06, stopPct = 0.05 } = cfg;
+  const shares = Math.round(capital / limitPx);
+  const target = +(limitPx * (1 + targetPct)).toFixed(2);
+  const stop = +(limitPx * (1 - stopPct)).toFixed(2);
+  const lim = +limitPx.toFixed(2);
+  // all three tickets reference the same lot; the OCO bracket and the MOC residual are mutually exclusive exit paths, not additive lots.
+  return {
+    entry: {
+      type: 'BUY LIMIT', shares, limitPx: lim, tif: 'Day',
+      note: `Buy ${shares} sh limit $${px(lim)} — deploys ~$${(shares * lim).toLocaleString()} only if SPCX trades down to your limit. If it never prints ≤ $${px(lim)}, nothing fills and you keep $${capital.toLocaleString()} in cash.`,
+    },
+    bracket: {
+      type: 'OCO (attach on fill)', shares, sellLimitPx: target, sellStopPx: stop, tif: 'Day',
+      note: `On fill, attach a one-cancels-other bracket: sell-limit $${target} (target +${(targetPct * 100).toFixed(0)}%) / sell-stop $${stop} (stop −${(stopPct * 100).toFixed(0)}%). In Active Trader Pro, stage this as a conditional/contingent order tied to the buy fill.`,
+    },
+    residual: {
+      type: 'MOC', shares,
+      note: `Any shares unsold by ~3:45pm ET → Sell-on-Close (MOC/LOC); if unavailable, sell at Market by ~3:50pm.`,
+    },
+  };
 }
 
-// Day-16 staged exit, anchored to the day-16 reference level (refPx): a core sold on the
-// day-16 open, two limit rungs above it, residual to the day-18 close. Stops clamped to
-// [entry, refPx] like the Day-1 scenarios.
-export function buildDay16Policy(entry, shares, refPx) {
-  const ref = refPx ?? entry;
-  const stopAt = (pct) => +Math.min(Math.max(ref * (1 + pct), entry), ref).toFixed(2);
-  return {
-    entry, shares, refPx: ref, coreAtOpenFrac: 0.34,
-    tranches: [ { frac: 0.33, limitPx: +(ref * 1.04).toFixed(2) }, { frac: 0.18, limitPx: +(ref * 1.09).toFixed(2) } ],
-    stopSchedule: [ { from: 0.0, stopPx: stopAt(-0.06) }, { from: 0.66, stopPx: stopAt(-0.02) } ],
-  };
+// ---- 20-day post-IPO engine (Phase 2) ----------------------------------------
+// Illustrative normalized post-IPO median path for large tech/space listings:
+// a mild first-week fade then a gradual drift back up. Day index 0..20, level[0]=1.
+// Used only as an OPTIONAL drift shape (driftWeight default 0 = martingale).
+export const MEGA_IPO_POSTIPO_CURVE = [
+  1.000, 0.985, 0.972, 0.965, 0.962, 0.968, 0.975, 0.982, 0.988, 0.992, 0.996,
+  1.000, 1.004, 1.008, 1.011, 1.014, 1.016, 1.018, 1.020, 1.021, 1.022,
+];
+
+// Walk each Day-1 close forward `days` trading days. Per-day log change blends:
+//   diffusion:  -0.5σ² + σ·Z                              (martingale GBM)
+//   drift:      driftWeight · log(curve[d]/curve[d-1])     (optional historical shape)
+//   anchor:     anchorStrength · (d/days) · (logT − logS)  (Polymarket terminal soft-pull)
+// where logT is a per-path log terminal sampled once from the Polymarket close-cap curve.
+export function simulatePostIPO(cfg) {
+  const {
+    closes, dailySigma, rng, days = 20,
+    driftCurve = MEGA_IPO_POSTIPO_CURVE, driftWeight = 0,
+    polyTerminal = null, anchorStrength = 0.3,
+  } = cfg;
+  const N = closes.length, g = () => gaussFrom(rng);
+  const hist = (driftCurve && driftWeight > 0)
+    ? Array.from({ length: days }, (_, i) => Math.log((driftCurve[i + 1] ?? 1) / (driftCurve[i] ?? 1)))
+    : null;
+  const grid = Array.from({ length: days + 1 }, () => new Array(N));
+  for (let p = 0; p < N; p++) {
+    let logS = Math.log(closes[p]);
+    grid[0][p] = closes[p];
+    let logT = null;
+    if (polyTerminal && anchorStrength > 0) {
+      const cap = sampleCap(polyTerminal.thresh, polyTerminal.above, rng); // $T
+      logT = Math.log(cap * 1e12 / polyTerminal.shares);
+    }
+    for (let d = 1; d <= days; d++) {
+      let dLog = -0.5 * dailySigma * dailySigma + g() * dailySigma;
+      if (hist) dLog += driftWeight * hist[d - 1];
+      if (logT != null) dLog += anchorStrength * (d / days) * (logT - logS);
+      logS += dLog;
+      grid[d][p] = Math.exp(logS);
+    }
+  }
+  return { grid, days };
 }
 
 // For each early step k, P(close > entry | price at step k < entry).
@@ -327,4 +370,75 @@ export function conditionalRecovery(grid, entry, ks = [1, 2, 3]) {
     for (let p = 0; p < N; p++) if (grid[k][p] < entry) { dips++; if (close[p] > entry) recover++; }
     return { k, frac: k / steps, dips, p: dips ? recover / dips : null };
   });
+}
+
+// ---- Reporting helpers (Phase 3): everything is net absolute dollars on a fixed basis ----
+
+export function netDollars(proceeds, capital = 100000) {
+  return proceeds - capital;
+}
+
+// Signed absolute-dollar string. Rounds to whole dollars; exact zero prints unsigned "$0".
+export function fmtNet(dollars) {
+  const r = Math.round(dollars);
+  if (r === 0) return '$0';
+  return `${r > 0 ? '+' : '-'}$${Math.abs(r).toLocaleString('en-US')}`;
+}
+
+// Per-day percentile envelope + P(price < belowLevel) for the fan chart.
+export function postIpoBands(grid, belowLevel = 135) {
+  const days = grid.length - 1, N = grid[0].length;
+  const pctAt = (col, q) => { const s = [...col].sort((a, b) => a - b); const i = (N - 1) * q, lo = Math.floor(i), hi = Math.ceil(i); return s[lo] + (s[hi] - s[lo]) * (i - lo); };
+  const out = [];
+  for (let d = 0; d <= days; d++) {
+    const col = grid[d];
+    let below = 0; for (let p = 0; p < N; p++) if (col[p] < belowLevel) below++;
+    out.push({
+      day: d,
+      p5: pctAt(col, 0.05), p25: pctAt(col, 0.25), median: pctAt(col, 0.5),
+      p75: pctAt(col, 0.75), p95: pctAt(col, 0.95), pBelow: below / N,
+    });
+  }
+  return out;
+}
+
+// ---- Case B: open-market bottom-feeder (Phase 1) -----------------------------
+// Buys the full capital at a limit (default $135) the first step price <= limitPx,
+// then exits via an OCO bracket: sell-limit at +targetPct, sell-stop at -stopPct,
+// target checked BEFORE stop within a step. Residual sells at the close. If no step
+// ever reaches the limit, the path records exactly $0 net (capital preserved).
+export function simulateBottomFeed(paths, cfg) {
+  const { grid } = paths;
+  const steps = grid.length - 1, N = grid[0].length;
+  const { limitPx = 135, capital = 100000, targetPct = 0.06, stopPct = 0.05 } = cfg;
+  const target = limitPx * (1 + targetPct);
+  const stop = limitPx * (1 - stopPct);
+  const shares = capital / limitPx;
+  const nets = new Array(N);
+  let fills = 0, targetHits = 0, stopHits = 0, closeHits = 0, noFill = 0;
+
+  for (let p = 0; p < N; p++) {
+    let kFill = -1;
+    for (let k = 0; k <= steps; k++) { if (grid[k][p] <= limitPx) { kFill = k; break; } }
+    if (kFill < 0) { nets[p] = 0; noFill++; continue; }   // No-Execution safety state
+    fills++;
+    let exitPx = null;
+    for (let k = kFill + 1; k <= steps; k++) {
+      const price = grid[k][p];
+      if (price >= target) { exitPx = target; targetHits++; break; }  // target before stop
+      if (price <= stop)   { exitPx = stop;   stopHits++;   break; }
+    }
+    if (exitPx == null) { exitPx = grid[steps][p]; closeHits++; }      // residual to close
+    nets[p] = shares * exitPx - capital;
+  }
+
+  const sorted = [...nets].sort((a, b) => a - b);
+  const pct = (q) => { const i = (N - 1) * q, lo = Math.floor(i), hi = Math.ceil(i); return sorted[lo] + (sorted[hi] - sorted[lo]) * (i - lo); };
+  const mean = nets.reduce((a, b) => a + b, 0) / N;
+  return {
+    pFill: fills / N, pNoFill: noFill / N,
+    net: { mean, median: pct(0.5), p5: pct(0.05), p95: pct(0.95) },
+    mix: { targetPct: targetHits / N, stopPct: stopHits / N, closePct: closeHits / N, noFillPct: noFill / N },
+    nets, shares,
+  };
 }
