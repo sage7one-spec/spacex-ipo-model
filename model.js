@@ -341,3 +341,44 @@ export function fmtNet(dollars) {
   if (r === 0) return '$0';
   return `${r > 0 ? '+' : '-'}$${Math.abs(r).toLocaleString('en-US')}`;
 }
+
+// ---- Case B: open-market bottom-feeder (Phase 1) -----------------------------
+// Buys the full capital at a limit (default $135) the first step price <= limitPx,
+// then exits via an OCO bracket: sell-limit at +targetPct, sell-stop at -stopPct,
+// target checked BEFORE stop within a step. Residual sells at the close. If no step
+// ever reaches the limit, the path records exactly $0 net (capital preserved).
+export function simulateBottomFeed(paths, cfg) {
+  const { grid } = paths;
+  const steps = grid.length - 1, N = grid[0].length;
+  const { limitPx = 135, capital = 100000, targetPct = 0.06, stopPct = 0.05 } = cfg;
+  const target = limitPx * (1 + targetPct);
+  const stop = limitPx * (1 - stopPct);
+  const shares = capital / limitPx;
+  const nets = new Array(N);
+  let fills = 0, targetHits = 0, stopHits = 0, closeHits = 0, noFill = 0;
+
+  for (let p = 0; p < N; p++) {
+    let kFill = -1;
+    for (let k = 0; k <= steps; k++) { if (grid[k][p] <= limitPx) { kFill = k; break; } }
+    if (kFill < 0) { nets[p] = 0; noFill++; continue; }   // No-Execution safety state
+    fills++;
+    let exitPx = null;
+    for (let k = kFill + 1; k <= steps; k++) {
+      const price = grid[k][p];
+      if (price >= target) { exitPx = target; targetHits++; break; }  // target before stop
+      if (price <= stop)   { exitPx = stop;   stopHits++;   break; }
+    }
+    if (exitPx == null) { exitPx = grid[steps][p]; closeHits++; }      // residual to close
+    nets[p] = shares * exitPx - capital;
+  }
+
+  const sorted = [...nets].sort((a, b) => a - b);
+  const pct = (q) => { const i = (N - 1) * q, lo = Math.floor(i), hi = Math.ceil(i); return sorted[lo] + (sorted[hi] - sorted[lo]) * (i - lo); };
+  const mean = nets.reduce((a, b) => a + b, 0) / N;
+  return {
+    pFill: fills / N, pNoFill: noFill / N,
+    net: { mean, median: pct(0.5), p5: pct(0.05), p95: pct(0.95) },
+    mix: { targetPct: targetHits / N, stopPct: stopHits / N, closePct: closeHits / N, noFillPct: noFill / N },
+    nets, shares,
+  };
+}

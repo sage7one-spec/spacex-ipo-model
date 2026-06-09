@@ -15,6 +15,7 @@ import {
   ticketsFromPolicy,
   simulateDay16, buildDay16Policy,
   netDollars, fmtNet,
+  simulateBottomFeed,
 } from '../model.js';
 
 const polyEvent = JSON.parse(readFileSync(new URL('./fixtures/poly-event.json', import.meta.url)));
@@ -280,4 +281,52 @@ test('fmtNet renders signed absolute dollars with thousands separators', () => {
   assert.equal(fmtNet(0), '$0');
   assert.equal(fmtNet(-0.4), '$0');      // rounds to zero → no sign
   assert.equal(fmtNet(999.6), '+$1,000');
+});
+
+// Helper: build a paths object from explicit per-step price columns (one path).
+function gridFromPath(prices) { return { grid: prices.map(px => [px]) }; }
+
+test('simulateBottomFeed: no step <= limit → $0 net, capital preserved', () => {
+  const paths = gridFromPath([200, 190, 180, 170]); // never dips to 135
+  const r = simulateBottomFeed(paths, { limitPx: 135, capital: 100000, targetPct: 0.06, stopPct: 0.05 });
+  assert.equal(r.pFill, 0);
+  assert.equal(r.pNoFill, 1);
+  assert.equal(r.nets[0], 0);
+  assert.equal(r.net.mean, 0);
+  assert.equal(r.mix.noFillPct, 1);
+});
+
+test('simulateBottomFeed: dip to limit then rally → exit at target (+6%)', () => {
+  const paths = gridFromPath([150, 135, 138, 145]);
+  const r = simulateBottomFeed(paths, { limitPx: 135, capital: 100000, targetPct: 0.06, stopPct: 0.05 });
+  const shares = 100000 / 135, target = 135 * 1.06;
+  assert.equal(r.pFill, 1);
+  assert.ok(Math.abs(r.nets[0] - (shares * target - 100000)) < 1e-6);
+  assert.equal(r.mix.targetPct, 1);
+});
+
+test('simulateBottomFeed: dip to limit then break down → exit at stop (-5%)', () => {
+  const paths = gridFromPath([150, 135, 130, 120]); // stop = 128.25 hit at step 3
+  const r = simulateBottomFeed(paths, { limitPx: 135, capital: 100000, targetPct: 0.06, stopPct: 0.05 });
+  const shares = 100000 / 135, stop = 135 * 0.95;
+  assert.ok(Math.abs(r.nets[0] - (shares * stop - 100000)) < 1e-6);
+  assert.equal(r.mix.stopPct, 1);
+});
+
+test('simulateBottomFeed: fill but neither target nor stop → residual sells at close', () => {
+  const paths = gridFromPath([150, 135, 137, 138]); // never reaches 143.10 or 128.25
+  const r = simulateBottomFeed(paths, { limitPx: 135, capital: 100000, targetPct: 0.06, stopPct: 0.05 });
+  const shares = 100000 / 135;
+  assert.ok(Math.abs(r.nets[0] - (shares * 138 - 100000)) < 1e-6);
+  assert.equal(r.mix.closePct, 1);
+});
+
+test('simulateBottomFeed: mix fractions sum to 1', () => {
+  const paths = { grid: [
+    [200, 150, 150, 150], // no fill
+    [135, 135, 130, 120], // fill at step0; step3=120 <= 128.25 stop
+  ].reduce((cols, path) => { path.forEach((px, k) => { (cols[k] ||= []).push(px); }); return cols; }, []) };
+  const r = simulateBottomFeed(paths, { limitPx: 135, capital: 100000, targetPct: 0.06, stopPct: 0.05 });
+  const m = r.mix;
+  assert.ok(Math.abs((m.targetPct + m.stopPct + m.closePct + m.noFillPct) - 1) < 1e-9);
 });
