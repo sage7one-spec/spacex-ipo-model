@@ -16,6 +16,7 @@ import {
   simulateDay16, buildDay16Policy,
   netDollars, fmtNet,
   simulateBottomFeed,
+  bottomFeedTicket,
 } from '../model.js';
 
 const polyEvent = JSON.parse(readFileSync(new URL('./fixtures/poly-event.json', import.meta.url)));
@@ -329,4 +330,15 @@ test('simulateBottomFeed: mix fractions sum to 1', () => {
   const r = simulateBottomFeed(paths, { limitPx: 135, capital: 100000, targetPct: 0.06, stopPct: 0.05 });
   const m = r.mix;
   assert.ok(Math.abs((m.targetPct + m.stopPct + m.closePct + m.noFillPct) - 1) < 1e-9);
+});
+
+test('bottomFeedTicket: buy-limit + OCO bracket + MOC residual', () => {
+  const t = bottomFeedTicket({ limitPx: 135, capital: 100000, targetPct: 0.06, stopPct: 0.05 });
+  assert.equal(t.entry.type, 'BUY LIMIT');
+  assert.equal(t.entry.shares, Math.round(100000 / 135)); // 741
+  assert.equal(t.entry.limitPx, 135);
+  assert.equal(t.bracket.sellLimitPx, +(135 * 1.06).toFixed(2)); // 143.10
+  assert.equal(t.bracket.sellStopPx, +(135 * 0.95).toFixed(2));  // 128.25
+  assert.equal(t.residual.type, 'MOC');
+  assert.ok(t.entry.note.includes('keep'));   // no-fill safety messaging
 });

@@ -292,6 +292,30 @@ export function ticketsFromPolicy(policy, opts = {}) {
   };
 }
 
+// Fidelity ATP order set for Case B: a buy-limit at/below the limit, an OCO bracket
+// attached on fill, and an MOC/LOC residual. Mirrors the bottom-feeder execution.
+export function bottomFeedTicket(cfg) {
+  const { limitPx = 135, capital = 100000, targetPct = 0.06, stopPct = 0.05 } = cfg;
+  const shares = Math.round(capital / limitPx);
+  const target = +(limitPx * (1 + targetPct)).toFixed(2);
+  const stop = +(limitPx * (1 - stopPct)).toFixed(2);
+  const lim = +limitPx.toFixed(2);
+  return {
+    entry: {
+      type: 'BUY LIMIT', shares, limitPx: lim, tif: 'Day',
+      note: `Buy ${shares} sh limit $${lim.toFixed(2)} — deploys ~$${(shares * lim).toLocaleString()} only if SPCX trades down to your limit. If it never prints ≤ $${lim.toFixed(2)}, nothing fills and you keep $${capital.toLocaleString()} in cash.`,
+    },
+    bracket: {
+      type: 'OCO (attach on fill)', shares, sellLimitPx: target, sellStopPx: stop, tif: 'Day',
+      note: `On fill, attach a one-cancels-other bracket: sell-limit $${target} (target +${(targetPct * 100).toFixed(0)}%) / sell-stop $${stop} (stop −${(stopPct * 100).toFixed(0)}%). In Active Trader Pro, stage this as a conditional/contingent order tied to the buy fill.`,
+    },
+    residual: {
+      type: 'MOC', shares,
+      note: `Any shares unsold by ~3:45pm ET → Sell-on-Close (MOC/LOC); if unavailable, sell at Market by ~3:50pm.`,
+    },
+  };
+}
+
 // Day-16 "clean" exit: drift each Day-1 close forward holdDays trading days (drift 0,
 // with an overnight-gap term), then build an exitDays-day grid for a staged exit.
 export function simulateDay16(cfg) {
