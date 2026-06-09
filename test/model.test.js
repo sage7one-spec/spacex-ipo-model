@@ -18,6 +18,7 @@ import {
   bottomFeedTicket,
   MEGA_IPO_POSTIPO_CURVE, simulatePostIPO,
   postIpoBands,
+  sampleBridgeMin, sampleBridgeMax, sampleCapU, normalizeTimingCurve,
 } from '../model.js';
 
 const polyEvent = JSON.parse(readFileSync(new URL('./fixtures/poly-event.json', import.meta.url)));
@@ -367,6 +368,172 @@ test('postIpoBands: ordered percentile bands per day + pBelow in [0,1]', () => {
   }
   assert.equal(bands[0].day, 0);
   assert.equal(bands[20].day, 20);
+});
+
+// ---- v4 fixes: bridge scale, interval extremes, rank coupling, normalization ----
+
+test('sampleBridgeMin/Max: closed-form interval extremes bracket the endpoints', () => {
+  const a = Math.log(100), b = Math.log(110), s2 = 0.03 * 0.03;
+  // u → 1 ⇒ ln u → 0 ⇒ extreme collapses onto the nearer endpoint
+  assert.ok(Math.abs(sampleBridgeMin(a, b, s2, 0.999999) - Math.min(a, b)) < 1e-3);
+  assert.ok(Math.abs(sampleBridgeMax(a, b, s2, 0.999999) - Math.max(a, b)) < 1e-3);
+  // any u: min ≤ both endpoints, max ≥ both endpoints
+  for (const u of [0.05, 0.3, 0.7]) {
+    assert.ok(sampleBridgeMin(a, b, s2, u) <= Math.min(a, b) + 1e-12);
+    assert.ok(sampleBridgeMax(a, b, s2, u) >= Math.max(a, b) - 1e-12);
+  }
+  // exact closed form: m = (a+b − √((a−b)² − 2s²·ln u)) / 2
+  const u = 0.4;
+  const expected = (a + b - Math.sqrt((a - b) ** 2 - 2 * s2 * Math.log(u))) / 2;
+  assert.ok(Math.abs(sampleBridgeMin(a, b, s2, u) - expected) < 1e-12);
+});
+
+test('simulateDayOne: bridge midpoint dispersion is σ/2 (consistent conditional scale)', () => {
+  const { thresh, above } = curveArrays(parsePolymarketCurve(polyEvent));
+  const vol = 100, sigMid = 0.02 + 0.18 * (vol / 100); // 0.20
+  const sim = simulateDayOne({ thresh, above, shares: 12.96e9, hlMark: 165, w: 0.5,
+    offer: 135, vol, N: 4000, steps: 8, rng: mulberry32(42) });
+  // residual at the middle node vs the log-linear open→close interpolation is the pure
+  // bridge term: SD should be σ/2, not σ (the old 2σ/√n scale doubled it)
+  const res = [];
+  for (let p = 0; p < 4000; p++) {
+    const lO = Math.log(sim.grid[0][p]), lC = Math.log(sim.grid[8][p]);
+    res.push(Math.log(sim.grid[4][p]) - (lO + lC) / 2);
+  }
+  const m = res.reduce((a, b) => a + b, 0) / res.length;
+  const sd = Math.sqrt(res.reduce((a, b) => a + (b - m) ** 2, 0) / (res.length - 1));
+  assert.ok(Math.abs(sd - sigMid / 2) < 0.05 * sigMid, `bridge midpoint SD ${sd} should be ≈ ${sigMid / 2}`);
+});
+
+test('simulateDayOne: returns per-interval extremes and per-path cap uniforms', () => {
+  const { thresh, above } = curveArrays(parsePolymarketCurve(polyEvent));
+  const sim = simulateDayOne({ thresh, above, shares: 12.96e9, hlMark: 165, w: 0.5,
+    offer: 135, vol: 60, N: 500, steps: 8, rng: mulberry32(7) });
+  assert.equal(sim.gridMin.length, 8);          // one row per interval
+  assert.equal(sim.gridMax.length, 8);
+  assert.equal(sim.gridMin[0].length, 500);
+  assert.equal(sim.capU.length, 500);
+  for (const u of sim.capU) assert.ok(u >= 0 && u < 100);
+  for (let k = 0; k < 8; k++) for (let p = 0; p < 500; p++) {
+    const lo = Math.min(sim.grid[k][p], sim.grid[k + 1][p]);
+    const hi = Math.max(sim.grid[k][p], sim.grid[k + 1][p]);
+    assert.ok(sim.gridMin[k][p] <= lo + 1e-9, 'interval min must not exceed endpoint min');
+    assert.ok(sim.gridMax[k][p] >= hi - 1e-9, 'interval max must not undercut endpoint max');
+  }
+  // path lows/highs must incorporate the sampled extremes
+  for (let p = 0; p < 500; p++) {
+    const iMin = Math.min(...sim.gridMin.map(r => r[p]));
+    const iMax = Math.max(...sim.gridMax.map(r => r[p]));
+    assert.ok(Math.abs(sim.lows[p] - iMin) < 1e-9);
+    assert.ok(Math.abs(sim.highs[p] - iMax) < 1e-9);
+  }
+});
+
+test('evaluatePolicy: interval extremes trigger limit fills nodes would miss', () => {
+  const paths = { grid: [[100], [100]], gridMin: [[98]], gridMax: [[120]] };
+  const policy = { shares: 100, entry: 100,
+    tranches: [{ frac: 1.0, limitPx: 110 }], stopSchedule: [] };
+  const r = evaluatePolicy(paths, policy);
+  assert.equal(r.Eproceeds, 100 * 110);   // fills at the rung mid-interval
+  assert.equal(r.mix.upsidePct, 1);
+});
+
+test('evaluatePolicy: interval extremes trigger the stop, limits still fill first', () => {
+  const stopPaths = { grid: [[100], [100]], gridMin: [[95]], gridMax: [[101]] };
+  const stopPolicy = { shares: 100, entry: 100, tranches: [],
+    stopSchedule: [{ from: 0, stopPx: 99 }] };
+  const rs = evaluatePolicy(stopPaths, stopPolicy);
+  assert.equal(rs.Eproceeds, 100 * 99);   // stop fires mid-interval at the stop price
+  assert.equal(rs.mix.stopPct, 1);
+
+  const bothPaths = { grid: [[100], [100]], gridMin: [[95]], gridMax: [[115]] };
+  const bothPolicy = { shares: 100, entry: 100,
+    tranches: [{ frac: 1.0, limitPx: 110 }],
+    stopSchedule: [{ from: 0, stopPx: 99 }] };
+  const rb = evaluatePolicy(bothPaths, bothPolicy);
+  assert.equal(rb.Eproceeds, 100 * 110);  // tie-break preserved: limit before stop
+});
+
+test('evaluatePolicy: reports the Monte Carlo standard error of mean proceeds', () => {
+  const grid = [[100, 100], [110, 90]];
+  const policy = { shares: 100, entry: 100, tranches: [], stopSchedule: [] };
+  const r = evaluatePolicy({ grid }, policy);
+  // proceeds [11000, 9000]: sd(n−1) = √2·1000, SE = sd/√2 = 1000
+  assert.equal(r.seProceeds, 1000);
+});
+
+test('simulateBottomFeed: interval lows trigger fills nodes would miss', () => {
+  // wide bracket (target 202.50 / stop 94.50) so no exit triggers → residual at close 150
+  const paths = { grid: [[150], [150]], gridMin: [[130]], gridMax: [[151]] };
+  const r = simulateBottomFeed(paths, { limitPx: 135, capital: 100000, targetPct: 0.5, stopPct: 0.3 });
+  assert.equal(r.pFill, 1);
+  const shares = 100000 / 135;
+  assert.ok(Math.abs(r.nets[0] - (shares * 150 - 100000)) < 1e-6);
+  assert.equal(r.mix.closePct, 1);
+});
+
+test('simulateBottomFeed: interval highs after the fill hit the target', () => {
+  const paths = { grid: [[150], [135], [140]],
+    gridMin: [[134], [134]], gridMax: [[150], [144]] };  // target 143.10 only inside interval 1
+  const r = simulateBottomFeed(paths, { limitPx: 135, capital: 100000, targetPct: 0.06, stopPct: 0.05 });
+  const shares = 100000 / 135, target = 135 * 1.06;
+  assert.equal(r.mix.targetPct, 1);
+  assert.ok(Math.abs(r.nets[0] - (shares * target - 100000)) < 1e-6);
+});
+
+test('simulateBottomFeed: reports the Monte Carlo standard error of mean net', () => {
+  const paths = { grid: [[200, 135], [200, 138], [200, 138]] }; // path0 no-fill ($0), path1 fills, closes 138
+  const r = simulateBottomFeed(paths, { limitPx: 135, capital: 100000, targetPct: 0.5, stopPct: 0.5 });
+  const net1 = (100000 / 135) * 138 - 100000;
+  const m = net1 / 2, sd = Math.sqrt(((0 - m) ** 2 + (net1 - m) ** 2) / 1);
+  assert.ok(Math.abs(r.net.se - sd / Math.sqrt(2)) < 1e-6);
+});
+
+test('sampleCapU: low uniform → high cap, deterministic, matches sampleCap draw', () => {
+  const { thresh, above } = curveArrays(parsePolymarketCurve(polyEvent));
+  assert.ok(sampleCapU(thresh, above, 5) > sampleCapU(thresh, above, 95));
+  const rng = mulberry32(99);
+  const u = mulberry32(99)() * 100;
+  assert.equal(sampleCap(thresh, above, rng), sampleCapU(thresh, above, u));
+});
+
+test('simulatePostIPO: rank-coupled terminals keep winners above losers', () => {
+  // path0 closed Day 1 high with a low uniform (= high cap); path1 the reverse
+  const closes = [200, 100], us = [5, 95];
+  const r = simulatePostIPO({ closes, dailySigma: 0.005, rng: mulberry32(31), days: 20,
+    polyTerminal: { thresh: [1.0, 2.0, 3.0], above: [99, 50, 1], shares: 12.96e9, us },
+    anchorStrength: 0.8 });
+  assert.ok(r.grid[20][0] > r.grid[20][1],
+    'the high-close path must anchor to its own high terminal, not an independent draw');
+});
+
+test('normalizeTimingCurve: divides out P(IPO) using the low-threshold plateau', () => {
+  const rows = [{ capT: 1, pAbove: 99 }, { capT: 2, pAbove: 49.5 }, { capT: 3, pAbove: 9.9 }];
+  const n = normalizeTimingCurve(rows);
+  assert.ok(Math.abs(n[0].pAbove - 100) < 1e-9);
+  assert.ok(Math.abs(n[1].pAbove - 50) < 1e-9);
+  assert.ok(Math.abs(n[2].pAbove - 10) < 1e-9);
+  // explicit pIpo wins, clamped to 100
+  const e = normalizeTimingCurve(rows, 0.9);
+  assert.equal(e[0].pAbove, 100);
+  // degenerate inputs pass through
+  assert.deepEqual(normalizeTimingCurve([]), []);
+});
+
+test('realizedVolFromCandles: IPO-day multiplier scales session vol, not hourly vol', () => {
+  const v1 = realizedVolFromCandles(hlCandles);
+  const v2 = realizedVolFromCandles(hlCandles, 2);
+  assert.equal(v2.hourlySigma, v1.hourlySigma);
+  assert.ok(Math.abs(v2.sessionSigma - 2 * v1.sessionSigma) < 1e-12);
+  assert.ok(v2.sliderVal > v1.sliderVal);
+});
+
+test('ticketsFromPolicy: checkpoint stop covers only shares without an OCO bracket', () => {
+  const policy = buildScenario('balanced', 50, { entry: 135, shares: 1111, refPx: 174 });
+  const t = ticketsFromPolicy(policy);
+  assert.ok(!/all unsold shares/.test(t.checkpoints[0].action),
+    'must not instruct a stop on shares already covered by OCO brackets (would oversell)');
+  assert.match(t.checkpoints[0].action, /OCO|residual/i);
 });
 
 test('postIpoBands: pBelow grows with horizon for a martingale started above the level', () => {

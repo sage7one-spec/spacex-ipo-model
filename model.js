@@ -48,9 +48,19 @@ export function gaussFrom(rng) {
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
 }
 
-// Inverse-CDF sample of closing market cap ($T) from the survival curve (generalized from v1).
-export function sampleCap(thresh, above, rng) {
-  const u = rng() * 100, last = above.length - 1;
+// Polymarket "above $X" prices are timing-contaminated: they resolve "No" if no IPO
+// happens by the deadline, so each pAbove is really P(IPO)·P(cap > X | IPO). Dividing by
+// the low-threshold plateau (≈ the crowd's P(IPO)) recovers the conditional curve.
+export function normalizeTimingCurve(rows, pIpo = null) {
+  if (!rows || !rows.length) return [];
+  const p = pIpo ?? Math.max(...rows.map(r => r.pAbove)) / 100;
+  if (!(p > 0)) return rows.map(r => ({ ...r }));
+  return rows.map(r => ({ ...r, pAbove: Math.min(100, r.pAbove / p) }));
+}
+
+// Inverse-CDF of closing market cap ($T) at survival level u ∈ [0,100).
+export function sampleCapU(thresh, above, u) {
+  const last = above.length - 1;
   if (u >= above[0]) { const f = (u - above[0]) / ((100 - above[0]) || 1); return thresh[0] * (1 - f * 0.15); } // below lowest quoted threshold: extrapolate up to 15% under it
   if (u <= above[last]) { const f = (above[last] - u) / (above[last] || 1); return thresh[last] + f * (thresh[last] * 0.375); } // above highest quoted threshold: extrapolate up to 37.5% over it
   for (let i = 0; i < last; i++) {
@@ -60,6 +70,23 @@ export function sampleCap(thresh, above, rng) {
     }
   }
   return thresh[Math.floor(last / 2)];
+}
+
+// Inverse-CDF sample of closing market cap ($T) from the survival curve.
+export function sampleCap(thresh, above, rng) {
+  return sampleCapU(thresh, above, rng() * 100);
+}
+
+// Closed-form sample of a Brownian bridge's extreme over one interval pinned at
+// log-levels a → b with interval variance s2, from a uniform u ∈ (0,1):
+//   min = (a + b − √((a−b)² − 2·s2·ln u)) / 2     (reflection principle)
+// u → 1 collapses onto the nearer endpoint; small u reaches further. Sampling min and
+// max from independent uniforms slightly overstates the joint range — acceptable here.
+export function sampleBridgeMin(a, b, s2, u) {
+  return (a + b - Math.sqrt((a - b) * (a - b) - 2 * s2 * Math.log(u))) / 2;
+}
+export function sampleBridgeMax(a, b, s2, u) {
+  return (a + b + Math.sqrt((a - b) * (a - b) - 2 * s2 * Math.log(u))) / 2;
 }
 
 // Polymarket-implied median closing cap ($T) via interpolation at the 50% crossing.
@@ -98,7 +125,9 @@ export function blendCenter(hlMark, polyMedianPerShare, w) {
 }
 
 // Hourly candles → realized vol. Maps daily sigma into v1's slider band: sigMid = 0.02 + 0.18*(slider/100).
-export function realizedVolFromCandles(candles) {
+// ipoDayMult scales the session vol up from the perp's calm regime toward Day-1 price
+// discovery (the synthetic perp tracks a slow oracle; real first-day IPO vol runs far hotter).
+export function realizedVolFromCandles(candles, ipoDayMult = 1) {
   const closes = (candles || []).map(k => +k.c).filter(x => isFinite(x) && x > 0);
   if (closes.length < 3) return null;
   const rets = [];
@@ -106,7 +135,7 @@ export function realizedVolFromCandles(candles) {
   const mu = rets.reduce((a, b) => a + b, 0) / rets.length;
   const varr = rets.reduce((a, b) => a + (b - mu) * (b - mu), 0) / (rets.length - 1);
   const hourlySigma = Math.sqrt(varr);
-  const sessionSigma = hourlySigma * Math.sqrt(6.5); // scale 24/7 hourly vol to the ~6.5h Day-1 equity trading session this model simulates
+  const sessionSigma = hourlySigma * Math.sqrt(6.5) * ipoDayMult; // 24/7 hourly vol → ~6.5h Day-1 session, × IPO-day multiplier
   const sliderVal = Math.max(0, Math.min(100, Math.round((sessionSigma - 0.02) / 0.18 * 100)));
   return { hourlySigma, sessionSigma, sliderVal };
 }
@@ -121,10 +150,19 @@ export function simulateDayOne(cfg) {
   const polyMedPerShare = polyMedCap * 1e12 / shares;    // $/share
   const center = blendCenter(hlMark, polyMedPerShare, w);// $/share
   const factor = polyMedPerShare > 0 ? center / polyMedPerShare : 1; // multiplicative re-center (keeps shape)
-  const n = steps, sigMid = 0.02 + 0.18 * (vol / 100), s = 2 * sigMid / Math.sqrt(n);
-  const closes = [], lows = [], highs = [], grid = Array.from({ length: n + 1 }, () => []);
+  // s = σ/√n: the conditional-consistent bridge scale (midpoint SD = σ/2 given open & close).
+  // The old 2σ/√n doubled the intraday wiggle the vol estimate justifies.
+  const n = steps, sigMid = 0.02 + 0.18 * (vol / 100), s = sigMid / Math.sqrt(n), s2 = s * s;
+  const closes = [], lows = [], highs = [], capU = [];
+  const grid = Array.from({ length: n + 1 }, () => []);
+  // per-interval bridge extremes — continuous-monitoring correction for touch/stop/fill events
+  const gridMin = Array.from({ length: n }, () => []);
+  const gridMax = Array.from({ length: n }, () => []);
+  const lp = new Array(n + 1);
   for (let p = 0; p < N; p++) {
-    const cap = sampleCap(thresh, above, rng);           // $T
+    const u = rng() * 100;                               // kept per path for rank-coupling Case C terminals
+    const cap = sampleCapU(thresh, above, u);            // $T
+    capU.push(u);
     const C = (cap * 1e12 / shares) * factor;            // $/share, blended close
     const oc = OPEN_TO_CLOSE[Math.floor(rng() * OPEN_TO_CLOSE.length)] + gauss() * 0.02;
     const O = C / (1 + oc);                              // opening print
@@ -132,17 +170,22 @@ export function simulateDayOne(cfg) {
     let W = 0; const Wk = [0];
     for (let k = 1; k <= n; k++) { W += gauss() * s; Wk.push(W); }
     const Wn = Wk[n];
-    let lo = Infinity, hi = -Infinity;
     for (let k = 0; k <= n; k++) {
       const bb = Wk[k] - (k / n) * Wn;
-      const price = Math.exp(lO + (lC - lO) * (k / n) + bb);
-      grid[k].push(price);
-      if (price < lo) lo = price;
-      if (price > hi) hi = price;
+      lp[k] = lO + (lC - lO) * (k / n) + bb;
+      grid[k].push(Math.exp(lp[k]));
+    }
+    let lo = Infinity, hi = -Infinity;
+    for (let k = 0; k < n; k++) {
+      const mn = Math.exp(sampleBridgeMin(lp[k], lp[k + 1], s2, rng()));
+      const mx = Math.exp(sampleBridgeMax(lp[k], lp[k + 1], s2, rng()));
+      gridMin[k].push(mn); gridMax[k].push(mx);
+      if (mn < lo) lo = mn;
+      if (mx > hi) hi = mx;
     }
     closes.push(C); lows.push(lo); highs.push(hi);
   }
-  return { closes, lows, highs, grid, entry: offer, center, polyMedPerShare };
+  return { closes, lows, highs, grid, gridMin, gridMax, capU, entry: offer, center, polyMedPerShare };
 }
 
 // ---- Execution layer (pure, tested) -------------------------------------
@@ -153,12 +196,13 @@ export function simulateDayOne(cfg) {
 // Tie-break: within a step, upside limits fill BEFORE the protective stop.
 // The stop covers the whole remaining position. Residual sells at the close price.
 export function evaluatePolicy(paths, policy) {
-  const { grid } = paths;
+  const { grid, gridMin, gridMax } = paths;   // gridMin/gridMax: optional per-interval bridge extremes
   const steps = grid.length - 1;
   const N = grid[0].length;
   const { shares, entry, coreAtOpenFrac = 0, tranches, stopSchedule } = policy;
   const basis = shares * entry;
   const proceeds = new Array(N);
+  const hasIv = !!(gridMin && gridMax);
   let subCount = 0, subSharesSum = 0, netLoss = 0, openSum = 0, upSum = 0, stopSum = 0, closeSum = 0;
 
   const activeStop = (frac) => {
@@ -175,17 +219,24 @@ export function evaluatePolicy(paths, policy) {
       value += q * open; if (open < entry) subShares += q; openSum += q; left -= q;
     }
     const filled = new Array(tranches.length).fill(false);
-    for (let k = 0; k <= steps && left > 1e-9; k++) {
-      const price = grid[k][p], frac = k / steps;
+    // touchHi/touchLo: highest/lowest price seen in this time element (node, or the
+    // bridge extremes of the following interval) — same tie-break either way.
+    const sweep = (touchHi, touchLo, frac) => {
       for (let t = 0; t < tranches.length; t++) {            // A) upside limits first
-        if (filled[t] || price < tranches[t].limitPx) continue;
+        if (filled[t] || touchHi < tranches[t].limitPx) continue;
         const qty = Math.min(left, shares * tranches[t].frac);
         value += qty * tranches[t].limitPx; left -= qty; upSum += qty; filled[t] = true;
       }
       const stop = activeStop(frac);                          // B) protective stop on remainder
-      if (stop != null && left > 1e-9 && price <= stop) {
+      if (stop != null && left > 1e-9 && touchLo <= stop) {
         value += left * stop; if (stop < entry) subShares += left; stopSum += left; left = 0;
       }
+    };
+    for (let k = 0; k <= steps && left > 1e-9; k++) {
+      const price = grid[k][p], frac = k / steps;
+      sweep(price, price, frac);                              // the node itself
+      if (hasIv && k < steps && left > 1e-9)                  // then the interval to the next node
+        sweep(gridMax[k][p], gridMin[k][p], frac);
     }
     if (left > 1e-9) {                                        // C) forced close-out at close
       const close = grid[steps][p];
@@ -199,9 +250,11 @@ export function evaluatePolicy(paths, policy) {
   const sorted = [...proceeds].sort((a, b) => a - b);
   const pct = (q) => { const i = (N - 1) * q, lo = Math.floor(i), hi = Math.ceil(i); return sorted[lo] + (sorted[hi] - sorted[lo]) * (i - lo); };
   const meanP = proceeds.reduce((a, b) => a + b, 0) / N;
+  const varP = proceeds.reduce((a, b) => a + (b - meanP) * (b - meanP), 0) / Math.max(1, N - 1);
   const tot = N * shares;
   return {
     Eproceeds: meanP, medianProceeds: pct(0.5), p5: pct(0.05), p95: pct(0.95),
+    seProceeds: Math.sqrt(varP / N),
     pNetLoss: netLoss / N, pSubBasisSale: subCount / N, eSharesSubBasis: subSharesSum / N,
     avgSalePx: meanP / shares,
     mix: { openPct: openSum / tot, upsidePct: upSum / tot, stopPct: stopSum / tot, closePct: closeSum / tot },
@@ -274,8 +327,8 @@ export function ticketsFromPolicy(policy, opts = {}) {
   const checkpoints = stopSchedule.map((s, i) => ({
     atFrac: s.from, clock: clock(s.from), stopPx: s.stopPx,
     action: i === 0
-      ? `Add a protective Sell Stop at $${s.stopPx} on all unsold shares — place it once SPCX has a printed price (new IPOs reject stops until a quote exists).`
-      : `Cancel the prior stop and re-enter it at $${s.stopPx} on all unsold shares.`,
+      ? `Place a protective Sell Stop at $${s.stopPx} on the residual shares only — each ladder tranche already carries its own stop leg inside its OCO bracket, so stopping them again would oversell. Place it once SPCX has a printed price (new IPOs reject stops until a quote exists).`
+      : `Raise protection to $${s.stopPx}: cancel/replace the residual stop, and cancel/replace the stop leg of each unfilled OCO bracket.`,
   }));
   return {
     coreAtOpen: {
@@ -348,7 +401,12 @@ export function simulatePostIPO(cfg) {
     grid[0][p] = closes[p];
     let logT = null;
     if (polyTerminal && anchorStrength > 0) {
-      const cap = sampleCap(polyTerminal.thresh, polyTerminal.above, rng); // $T
+      // Rank coupling: when the caller passes the per-path uniforms that generated each
+      // Day-1 close (polyTerminal.us), reuse them so a path that closed at its 95th
+      // percentile anchors to the 95th-percentile terminal — an independent draw here
+      // would manufacture cross-sectional mean reversion and shrink the 20-day fan.
+      const u = polyTerminal.us ? polyTerminal.us[p] : rng() * 100;
+      const cap = sampleCapU(polyTerminal.thresh, polyTerminal.above, u); // $T
       logT = Math.log(cap * 1e12 / polyTerminal.shares);
     }
     for (let d = 1; d <= days; d++) {
@@ -408,25 +466,39 @@ export function postIpoBands(grid, belowLevel = 135) {
 // target checked BEFORE stop within a step. Residual sells at the close. If no step
 // ever reaches the limit, the path records exactly $0 net (capital preserved).
 export function simulateBottomFeed(paths, cfg) {
-  const { grid } = paths;
+  const { grid, gridMin, gridMax } = paths;   // gridMin/gridMax: optional per-interval bridge extremes
   const steps = grid.length - 1, N = grid[0].length;
   const { limitPx = 135, capital = 100000, targetPct = 0.06, stopPct = 0.05 } = cfg;
   const target = limitPx * (1 + targetPct);
   const stop = limitPx * (1 - stopPct);
   const shares = capital / limitPx;
   const nets = new Array(N);
+  const hasIv = !!(gridMin && gridMax);
   let fills = 0, targetHits = 0, stopHits = 0, closeHits = 0, noFill = 0;
 
+  // Unified time sequence: element e ∈ [0, 2·steps] — even e is node e/2, odd e is the
+  // interval (e−1)/2 between nodes (checked only when bridge extremes are provided).
+  // A fill inside an element defers exit checks to the NEXT element (ordering within
+  // one element is ambiguous); within an exit element, target is checked before stop.
   for (let p = 0; p < N; p++) {
-    let kFill = -1;
-    for (let k = 0; k <= steps; k++) { if (grid[k][p] <= limitPx) { kFill = k; break; } }
-    if (kFill < 0) { nets[p] = 0; noFill++; continue; }   // No-Execution safety state
+    let eFill = -1;
+    for (let e = 0; e <= 2 * steps; e++) {
+      if (e % 2 === 0) { if (grid[e / 2][p] <= limitPx) { eFill = e; break; } }
+      else if (hasIv) { if (gridMin[(e - 1) / 2][p] <= limitPx) { eFill = e; break; } }
+    }
+    if (eFill < 0) { nets[p] = 0; noFill++; continue; }   // No-Execution safety state
     fills++;
     let exitPx = null;
-    for (let k = kFill + 1; k <= steps; k++) {
-      const price = grid[k][p];
-      if (price >= target) { exitPx = target; targetHits++; break; }  // target before stop
-      if (price <= stop)   { exitPx = stop;   stopHits++;   break; }
+    for (let e = eFill + 1; e <= 2 * steps && exitPx == null; e++) {
+      if (e % 2 === 0) {
+        const price = grid[e / 2][p];
+        if (price >= target)      { exitPx = target; targetHits++; }
+        else if (price <= stop)   { exitPx = stop;   stopHits++; }
+      } else if (hasIv) {
+        const k = (e - 1) / 2;
+        if (gridMax[k][p] >= target)    { exitPx = target; targetHits++; }
+        else if (gridMin[k][p] <= stop) { exitPx = stop;   stopHits++; }
+      }
     }
     if (exitPx == null) { exitPx = grid[steps][p]; closeHits++; }      // residual to close
     nets[p] = shares * exitPx - capital;
@@ -435,9 +507,10 @@ export function simulateBottomFeed(paths, cfg) {
   const sorted = [...nets].sort((a, b) => a - b);
   const pct = (q) => { const i = (N - 1) * q, lo = Math.floor(i), hi = Math.ceil(i); return sorted[lo] + (sorted[hi] - sorted[lo]) * (i - lo); };
   const mean = nets.reduce((a, b) => a + b, 0) / N;
+  const varN = nets.reduce((a, b) => a + (b - mean) * (b - mean), 0) / Math.max(1, N - 1);
   return {
     pFill: fills / N, pNoFill: noFill / N,
-    net: { mean, median: pct(0.5), p5: pct(0.05), p95: pct(0.95) },
+    net: { mean, median: pct(0.5), p5: pct(0.05), p95: pct(0.95), se: Math.sqrt(varN / N) },
     mix: { targetPct: targetHits / N, stopPct: stopHits / N, closePct: closeHits / N, noFillPct: noFill / N },
     nets, shares,
   };

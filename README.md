@@ -8,7 +8,9 @@ allocation. It pulls fresh data on **every page load** (no server, no API keys):
 
 The Day-1 close is a **blend** (weight slider): Hyperliquid sets the center level, Polymarket sets
 the spread. 10,000 paths run a Brownian bridge from a historically-grounded opening print to the
-blended close. Add-ons: intraday-volatility default derived from SPCX's real realized vol, a
+blended close, with per-interval extremes sampled from the bridge's closed-form extreme-value law
+so touch/stop/fill events are detected continuously, not just on the hour. Add-ons:
+intraday-volatility default derived from SPCX's real realized vol × an IPO-day multiplier (2×), a
 Hyperliquid-vs-Polymarket **agreement/confidence** gauge, and a SPCX **funding-rate sentiment** chip.
 
 If either API is unreachable the page falls back to a baked-in snapshot and flags it ("last-known
@@ -16,11 +18,14 @@ data") — a shared link never shows a blank or broken page.
 
 **Live:** https://sage7one-spec.github.io/spacex-ipo-model/
 
-## Three strategies — all reported in net absolute dollars on $100,000
+## Three strategies — all reported in net absolute dollars on one capital base
 
-All scenarios are benchmarked to a fixed **$100,000 capital base** and scored as a **signed net
-dollar change** (e.g. +$22,000 / −$5,000) — not as percentages or running balances. A "Three-strategy
-scorecard" in the UI shows A/B/C side by side.
+All scenarios are benchmarked to the **same capital base** (the position-size input, default
+$100,000) and scored as a **signed net dollar change** (e.g. +$22,000 / −$5,000) — not as
+percentages or running balances. All three strategies are scored on the **same 10,000 simulated
+paths** (common random numbers), so scorecard differences are strategy, not sampling noise; the
+mean row shows the Monte Carlo standard error. A "Three-strategy scorecard" in the UI shows A/B/C
+side by side.
 
 **Case A — Day-1 flip (the Execution Plan).** Buy the $135 pre-IPO allocation (~741 shares on
 $100,000), sell on Day 1 using the laddered plan below. Net $ reflects the gain or loss on that
@@ -86,7 +91,10 @@ where:
 - `driftWeight` (default **0** = martingale) scales the baked `MEGA_IPO_POSTIPO_CURVE` historical
   shape; raise it to pull the fan toward the historical mega-IPO pattern.
 - `anchorStrength` (default **0.3**) ramps a soft pull toward a per-path Polymarket-implied terminal
-  price `T`; `S` is the current step price.
+  price `T`; `S` is the current step price. `T` is **rank-coupled** to the path's own Day-1 close
+  (same survival-curve uniform), so a path that closed at its 95th percentile anchors to the
+  95th-percentile terminal — an independent draw would manufacture cross-sectional mean reversion
+  and artificially shrink the 20-day fan.
 - `d` runs 1 → 20 so the anchor strengthens linearly over the holding period.
 
 Net effect: Hyperliquid governs the level and early path, the historical curve adds optional shape,
@@ -123,8 +131,9 @@ scenarios is understated. All scoring lives in pure, unit-tested functions in `m
 
 Both sources are **proxies** for the real stock: the Hyperliquid perp is synthetic with basis risk
 (see the May 28 2026 oracle flash-crash), and the Polymarket markets are **timing-contaminated**
-(they resolve "No" if no IPO by Dec 2027). Live data anchors the close **level**, not the intraday
-**path** (the path is model-driven). The June 11 2026 date, $135 price, and share count are
+(they resolve "No" if no IPO by Dec 2027) — the model divides the curve by its low-threshold
+plateau (≈ the crowd's P(IPO)) to recover the conditional distribution. Live data anchors the
+close **level**, not the intraday **path** (the path is model-driven). The June 11 2026 date, $135 price, and share count are
 user-supplied and unverified — confirm with Fidelity.
 
 Case B's net-$ distribution includes the $0 no-fill days (it is the unconditional strategy EV, not

@@ -88,7 +88,7 @@
       <div class="ctl"><label>Shares outstanding <span class="val" id="shLbl">12.96B</span></label>
         <input type="number" id="shares" value="12.96" min="1" max="30" step="0.01"><div class="hint" style="margin-top:6px">Converts Polymarket market-cap odds → $/share.</div></div>
       <div class="ctl"><label>Intraday volatility <span class="val" id="volLbl">6</span> / 100</label>
-        <input type="range" id="vol" min="0" max="100" value="6"><div class="hint" style="margin-top:6px">How wild the swings are between open and close.</div></div>
+        <input type="range" id="vol" min="0" max="100" value="6"><div class="hint" style="margin-top:6px">How wild the swings are between open and close. Default = SPCX realized vol × 2 IPO-day multiplier.</div></div>
     </div>
   </div>
 
@@ -98,8 +98,8 @@
   <div class="verdict"><div class="lead" id="verdict"></div></div>
 
   <section class="card" id="scoreSection" style="margin-top:16px">
-    <div class="secrow"><h2>Three-strategy scorecard — net $ on $100,000</h2><span class="ln"></span></div>
-    <p class="hint">Every figure is net absolute dollar change on a $100,000 benchmark. <b>A</b> = buy the $135 allocation, sell Day 1. <b>B</b> = bottom-feed a Day-1 dip ≤ $135 in the open market (cash; $0 when it never fills). <b>C</b> = hold the $135 allocation to the chosen exit day.</p>
+    <div class="secrow"><h2 id="scoreHdr">Three-strategy scorecard — net $ on $100,000</h2><span class="ln"></span></div>
+    <p class="hint">Every figure is net absolute dollar change on the same capital base (your position size, default $100,000). All three strategies are scored on the <i>same</i> 10,000 simulated paths. <b>A</b> = buy the $135 allocation, sell Day 1. <b>B</b> = bottom-feed a Day-1 dip ≤ $135 in the open market (cash; $0 when it never fills). <b>C</b> = hold the $135 allocation to the chosen exit day.</p>
     <div id="scorecard" style="overflow-x:auto"></div>
   </section>
 
@@ -131,7 +131,7 @@
 
   <div class="secrow"><h3>Polymarket Source Odds (live)</h3><span class="ln"></span></div>
   <div class="card"><h2>P(closing market cap above threshold)</h2>
-    <p class="hint">The crowd-sourced curve that sets the close spread.</p>
+    <p class="hint">The crowd-sourced curve that sets the close spread — shown timing-normalized: raw Polymarket prices are divided by their low-threshold plateau (≈ the crowd's P(IPO happens at all)) so the model uses P(cap &gt; X | IPO).</p>
     <div class="cbox short"><canvas id="survChart"></canvas></div></div>
 
 <section class="card" id="execSection" style="margin-top:16px">
@@ -163,7 +163,7 @@
   <div id="checkpointList" class="hint"></div>
 
   <h3 style="margin-top:16px">Case B — bottom-feeder: buy the Day-1 dip ≤ $135 (open market, no 16-day lock)</h3>
-  <p class="hint">A separate $100,000 cash play: a limit BUY that fills only if SPCX trades down to your price on Day 1, then an OCO bracket (profit target / stop) exits the same day. If it never dips to your limit, nothing fills — you keep $100,000, $0 change.</p>
+  <p class="hint">A separate cash play of the same size as your position: a limit BUY that fills only if SPCX trades down to your price on Day 1, then an OCO bracket (profit target / stop) exits the same day. If it never dips to your limit, nothing fills — you keep your cash, $0 change. Scored on the same simulated paths as Case A.</p>
   <div class="ctlrow" style="display:flex;gap:18px;flex-wrap:wrap">
     <div class="ctl"><label>Limit buy price <span class="val" id="bfLimitLbl">$135</span></label>
       <input type="number" id="bfLimit" value="135" min="1" step="1"><div class="hint">Fills only if the day trades at/below this.</div></div>
@@ -191,7 +191,7 @@
 </section>
 
   <div class="foot">
-    <b>How it works.</b> Each of 10,000 paths samples a Day-1 <i>closing</i> market cap from the live Polymarket distribution → a closing price (cap ÷ shares outstanding), then re-centers it toward the blend of the Hyperliquid <code>xyz:SPCX</code> mark and the Polymarket-implied price (weight slider). The opening print is drawn from historical mega-IPO open-to-close behavior, then a Brownian-bridge random walk (scaled by your intraday-volatility setting) connects the open to that close across 8 hourly steps. The fan shows the percentile envelope of those paths; the low/high charts show each path's intraday extremes.
+    <b>How it works.</b> Each of 10,000 paths samples a Day-1 <i>closing</i> market cap from the live Polymarket distribution (timing-normalized by the crowd's P(IPO)) → a closing price (cap ÷ shares outstanding), then re-centers it toward the blend of the Hyperliquid <code>xyz:SPCX</code> mark and the Polymarket-implied price (weight slider). The opening print is drawn from historical mega-IPO open-to-close behavior, then a Brownian-bridge random walk (scaled by your intraday-volatility setting) connects the open to that close across 8 hourly steps. Between the hourly nodes, each interval's high and low are sampled from the bridge's closed-form extreme-value law, so touch, stop, and fill events are detected continuously rather than only on the hour. The fan shows the percentile envelope of those paths; the low/high charts show each path's intraday extremes.
     <br><br>
     <b>Honest read.</b> At $135 with a blended close near the live mark, the <i>close</i> is usually green — but the <i>intraday</i> ride can still dip below your entry early before settling higher, and a thin minority of paths close red. The model says "probably up, possibly bumpy," not "guaranteed." It cannot predict a specific halt, circuit-breaker, or news shock.
     <br><br>
@@ -200,7 +200,7 @@
   <div class="disc">
     <b>Not financial advice.</b> The June 11 2026 date and $135 price are inputs you supplied and are <b>not independently verified here</b> — no S-1 in my data, and Polymarket still resolves "No" if no IPO occurs by Dec 31 2027. The Hyperliquid <code>xyz:SPCX</code> perp is a synthetic proxy with basis risk (note the May 28 flash-crash). A $2T-scale listing may behave nothing like the historical comparables, and intraday IPO volatility can be extreme (halts, gaps). Confirm terms with Fidelity. A $100,000 position can move thousands of dollars in minutes. Size to what you can afford to lose.
     <br><br>
-    <b>About the Execution Plan.</b> It models fills at 8 intraday steps (an approximation of true intraday highs/lows) and assumes limit orders fill at the rung price, the core sells at the opening print, and stops fill <i>at the stop price</i> — real fills can <b>gap through a stop</b> in a fast move or halt, so the "hold more" scenarios carry more downside than the model shows. The ~17% chance of a sub-$135 sale is largely irreducible: it is roughly the model's probability that SPCX is below your $135 basis at the open or the close, which a must-be-flat-by-close plan cannot avoid. Per this model the highest-expected-value Day-1 move is simply to sell into the open; the laddered scenarios trade a small expected haircut for upside participation plus a defined floor. The 20-day hold fan (Case C) defaults to zero drift (a martingale); the optional drift-weight and Polymarket-anchor sliders are planning aids, not forecasts. Order types, the on-close (MOC/LOC) cutoff, and stop behavior on a first-day IPO must be confirmed in your own Fidelity account; <b>selling within 15 calendar days is a flip</b> (6-month IPO-access block, first offense).
+    <b>About the Execution Plan.</b> Fills are detected continuously (hourly nodes plus Brownian-bridge interval extremes) and assume limit orders fill at the rung price, the core sells at the opening print, and stops fill <i>at the stop price</i> — real fills can <b>gap through a stop</b> in a fast move or halt, so the "hold more" scenarios carry more downside than the model shows. The residual chance of a sub-$135 sale is largely irreducible: it is roughly the model's probability that SPCX is below your $135 basis at the open or the close, which a must-be-flat-by-close plan cannot avoid. Per this model the highest-expected-value Day-1 move is simply to sell into the open; the laddered scenarios trade a small expected haircut for upside participation plus a defined floor. The 20-day hold fan (Case C) defaults to zero drift (a martingale); the optional drift-weight and Polymarket-anchor sliders are planning aids, not forecasts. Order types, the on-close (MOC/LOC) cutoff, and stop behavior on a first-day IPO must be confirmed in your own Fidelity account; <b>selling within 15 calendar days is a flip</b> (6-month IPO-access block, first offense).
   </div>
 </div>
 
@@ -209,8 +209,16 @@ import { mulberry32, parsePolymarketCurve, curveArrays, parseHyperliquid,
          realizedVolFromCandles, medianCapT, disagreement, simulateDayOne,
          evaluatePolicy, sellAllAt, conditionalRecovery, buildScenario, SCENARIO_NAMES,
          ticketsFromPolicy, simulatePostIPO, postIpoBands, netDollars, fmtNet,
-         simulateBottomFeed, bottomFeedTicket } from './model.js';
+         simulateBottomFeed, bottomFeedTicket, normalizeTimingCurve } from './model.js';
 import { BAKED_SNAPSHOT } from './snapshot.js';
+
+// Day-1 IPO price discovery runs far hotter than the oracle-tracked perp's realized vol;
+// the perp number is treated as a floor and scaled up by this multiplier.
+const IPO_DAY_VOL_MULT = 2;
+const sliderFromSession = (sig) => Math.max(0, Math.min(100, Math.round((sig - 0.02) / 0.18 * 100)));
+// The model always consumes the timing-normalized curve (raw Polymarket prices are
+// P(IPO)·P(cap>X | IPO); see normalizeTimingCurve).
+const theCurve = () => normalizeTimingCurve(live.curve);
 
 // Live data store — starts as the baked snapshot, replaced by fetchLive() in Task 10.
 const live = {
@@ -221,7 +229,8 @@ const live = {
   status: 'snapshot'   // 'live' | 'snapshot' | 'partial'
 };
 
-const state = { pos:100000, offer:135, shares:12.96e9, w:0.5, vol:BAKED_SNAPSHOT.vol.sliderVal, N:10000, steps:8,
+const state = { pos:100000, offer:135, shares:12.96e9, w:0.5,
+                vol:sliderFromSession(BAKED_SNAPSHOT.vol.sessionSigma * IPO_DAY_VOL_MULT), N:10000, steps:8,
                 scenario:'balanced', risk:50, openPx:null }; // openPx: actual IPO opening print; null = use the model's expected open
 let SEED = 20260611;
 let rng = mulberry32(SEED);
@@ -239,16 +248,29 @@ function cls(x){return x>0.001?'pos':x<-0.001?'neg':'neu';}
 function setText(id,t){document.getElementById(id).textContent=t;}
 
 let closeChart,rangeChart,survChart,touchChart,fan20Chart;
+let lastSim = null;   // most recent Day-1 simulation — partial re-renders reuse it
 const scoreData = { A:null, B:null, C:null };
+
+function debounce(fn, ms=120){ let t; return ()=>{ clearTimeout(t); t=setTimeout(fn, ms); }; }
+// Partial re-renders: only the sections downstream of the touched control re-compute.
+// Model inputs (pos/offer/weight/shares/vol) need the full pipeline; execution-plan,
+// bottom-feeder, and 20-day controls reuse lastSim instead of re-simulating 10k paths.
+const rerender = {
+  full: debounce(render),
+  plan: debounce(()=>{ if(!lastSim) return; renderExecutionPlan(lastSim); renderScorecard(); }),
+  bf:   debounce(()=>{ if(!lastSim) return; renderBottomFeed(lastSim); renderScorecard(); }),
+  c20:  debounce(()=>{ if(!lastSim) return; render20Day(lastSim, lastSim.entry); renderScorecard(); }),
+};
 const GRID='#1a2336',TICK='#8b97ad',PUR='#7c5cff',BLUE='#4da3ff';
 const baseOpts=(e={})=>Object.assign({responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
   scales:{x:{grid:{color:GRID},ticks:{color:TICK}},y:{grid:{color:GRID},ticks:{color:TICK}}}},e);
 
 function render(){
   reseed();
-  const { thresh, above } = curveArrays(live.curve);
+  const { thresh, above } = curveArrays(theCurve());
   const sim = simulateDayOne({ thresh, above, shares: state.shares, hlMark: live.hl.mark,
                                w: state.w, offer: state.offer, vol: state.vol, N: state.N, steps: state.steps, rng });
+  lastSim = sim;
   const { closes, lows, highs, grid, entry } = sim;
   const polyMedPerShare = sim.polyMedPerShare;
   const dis = disagreement(live.hl.mark, polyMedPerShare);
@@ -299,7 +321,7 @@ function render(){
   drawRange(lows,highs,entry);
   drawSurv(thresh,above);
   renderExecutionPlan(sim);
-  renderBottomFeed();
+  renderBottomFeed(sim);
   renderScorecard();
 }
 
@@ -309,7 +331,7 @@ function txt(s){ return document.createTextNode(s); }
 
 function render20Day(sim, entry){
   const dailySigma = 0.02 + 0.18 * (state.vol / 100);            // same per-session sigma the Day-1 model uses
-  const { thresh, above } = curveArrays(live.curve);
+  const { thresh, above } = curveArrays(theCurve());
   const driftWeight = (+document.getElementById('driftW').value) / 100;
   const anchorStrength = (+document.getElementById('anchorS').value) / 100;
   const exitDay = +document.getElementById('exitDay').value;
@@ -317,8 +339,9 @@ function render20Day(sim, entry){
   document.getElementById('anchorSLbl').textContent = Math.round(anchorStrength*100);
   document.getElementById('exitDayLbl').textContent = exitDay;
 
+  // capU rank-couples each path's terminal anchor to its own Day-1 close percentile
   const pip = simulatePostIPO({ closes: sim.closes, dailySigma, rng: mulberry32(SEED + 20), days: 20,
-    driftWeight, polyTerminal: { thresh, above, shares: state.shares }, anchorStrength });
+    driftWeight, polyTerminal: { thresh, above, shares: state.shares, us: sim.capU }, anchorStrength });
   const bands = postIpoBands(pip.grid, entry);
   const labels = bands.map(b => b.day);
   const col = (a) => bands.map(b => b[a]);
@@ -340,18 +363,21 @@ function render20Day(sim, entry){
                y:{ ticks:{ callback:v=>'$'+v.toFixed(0) } } } }
   });
 
-  const cShares = 100000 / entry;                                 // shares the $100k allocation buys at $135
+  const cShares = state.pos / entry;                              // shares the allocation buys at the entry price
   const b = bands[exitDay];
-  const meanColC = pip.grid[exitDay].reduce((a,c)=>a+c,0) / pip.grid[exitDay].length;
-  scoreData.C = { exitDay, mean: netDollars(cShares*meanColC), median: netDollars(cShares*b.median),
-    p5: netDollars(cShares*b.p5), p95: netDollars(cShares*b.p95), pLoss: b.pBelow,
+  const exitCol = pip.grid[exitDay], nCol = exitCol.length;
+  const meanColC = exitCol.reduce((a,c)=>a+c,0) / nCol;
+  const varColC = exitCol.reduce((a,c)=>a+(c-meanColC)*(c-meanColC),0) / Math.max(1, nCol-1);
+  scoreData.C = { exitDay, mean: netDollars(cShares*meanColC, state.pos), median: netDollars(cShares*b.median, state.pos),
+    p5: netDollars(cShares*b.p5, state.pos), p95: netDollars(cShares*b.p95, state.pos), pLoss: b.pBelow,
+    se: cShares * Math.sqrt(varColC / nCol),
     sig: `Underwater @ day ${exitDay}: ${(b.pBelow*100).toFixed(0)}%` };
   const out = document.getElementById('fan20Out'); out.textContent='';
   out.append(
     el('b', { textContent: `Case C — hold to day ${exitDay}: ` }),
     txt('median '),
-    el('b', { textContent: fmtNet(netDollars(cShares * b.median)), style:'color:'+(b.median>=entry?'#28d17c':'#ff5c6c') }),
-    txt(` on $100k (middle-90% ${fmtNet(netDollars(cShares*b.p5))} to ${fmtNet(netDollars(cShares*b.p95))}). `),
+    el('b', { textContent: fmtNet(netDollars(cShares * b.median, state.pos)), style:'color:'+(b.median>=entry?'#28d17c':'#ff5c6c') }),
+    txt(` on ${fmtMoney(state.pos)} (middle-90% ${fmtNet(netDollars(cShares*b.p5, state.pos))} to ${fmtNet(netDollars(cShares*b.p95, state.pos))}). `),
     el('b', { textContent: (b.pBelow*100).toFixed(0)+'% underwater', style:'color:'+(b.pBelow>0.33?'#ff5c6c':'#ffb648') }),
     txt(` (below your $${entry} basis at day ${exitDay}).`));
 }
@@ -359,7 +385,7 @@ function render20Day(sim, entry){
 function renderExecutionPlan(sim){
   const entry = sim.entry;
   const shares = Math.round(state.pos / entry);
-  const paths = { grid: sim.grid, entry };
+  const paths = { grid: sim.grid, gridMin: sim.gridMin, gridMax: sim.gridMax, entry };
   // reference opening price: the model's expected (median) open, or the user's override
   const modelOpen = pctile(sim.grid[0], 0.5);
   const refPx = (state.openPx && state.openPx > 0) ? state.openPx : modelOpen;
@@ -373,7 +399,7 @@ function renderExecutionPlan(sim){
     SCENARIO_NAMES.forEach(n=>{
       const b = el('button', { className:'btn', textContent:labels[n] });
       b.dataset.scen = n;
-      b.addEventListener('click', ()=>{ state.scenario=n; render(); });
+      b.addEventListener('click', ()=>{ state.scenario=n; rerender.plan(); });
       bw.appendChild(b);
     });
     bw.dataset.built = '1';
@@ -411,6 +437,7 @@ function renderExecutionPlan(sim){
   ];
   scoreData.A = { mean: netDollars(r.Eproceeds, basis), median: netDollars(r.medianProceeds, basis),
     p5: netDollars(r.p5, basis), p95: netDollars(r.p95, basis), pLoss: r.pNetLoss,
+    se: r.seProceeds,
     sig: `Sub-$${entry} sale ${(r.pSubBasisSale*100).toFixed(0)}%` };
   const M = document.getElementById('execMetrics'); M.textContent='';
   cards.forEach(m=> M.append(el('div', { className:'metric' },
@@ -458,10 +485,9 @@ function renderExecutionPlan(sim){
   render20Day(sim, entry);
 }
 
-function renderBottomFeed(){
-  const { thresh, above } = curveArrays(live.curve);
-  const fineSim = simulateDayOne({ thresh, above, shares: state.shares, hlMark: live.hl.mark,
-    w: state.w, offer: state.offer, vol: state.vol, N: state.N, steps: 26, rng: mulberry32(SEED + 30) });
+function renderBottomFeed(sim){
+  // Shares the Day-1 grid (and its bridge extremes) with Case A: common random numbers,
+  // identical resolution — strategy differences in the scorecard aren't sampling noise.
   const limitPx = Math.max(1, +document.getElementById('bfLimit').value || 135);
   const targetPct = Math.max(0, (+document.getElementById('bfTarget').value || 0) / 100);
   const stopPct = Math.max(0, (+document.getElementById('bfStop').value || 0) / 100);
@@ -469,9 +495,11 @@ function renderBottomFeed(){
   setText('bfTargetLbl', (targetPct * 100).toFixed(0) + '%');
   setText('bfStopLbl', (stopPct * 100).toFixed(0) + '%');
 
-  const r = simulateBottomFeed({ grid: fineSim.grid }, { limitPx, capital: 100000, targetPct, stopPct });
+  const r = simulateBottomFeed({ grid: sim.grid, gridMin: sim.gridMin, gridMax: sim.gridMax },
+    { limitPx, capital: state.pos, targetPct, stopPct });
   scoreData.B = { mean: r.net.mean, median: r.net.median, p5: r.net.p5, p95: r.net.p95,
     pLoss: r.nets.filter(x=>x<0).length / r.nets.length,
+    se: r.net.se,
     sig: `Fills ${(r.pFill*100).toFixed(0)}% · no-fill ${(r.pNoFill*100).toFixed(0)}%` };
   const pct = (x) => (x * 100).toFixed(0) + '%';
 
@@ -479,15 +507,15 @@ function renderBottomFeed(){
   out.append(
     el('b', { textContent: `Fill odds ${pct(r.pFill)}` }),
     txt(` — the day trades down to your $${limitPx} limit; `),
-    el('b', { textContent: `${pct(r.pNoFill)} no-fill (keep $100,000, $0)` }),
+    el('b', { textContent: `${pct(r.pNoFill)} no-fill (keep ${fmtMoney(state.pos)}, $0)` }),
     txt('. '), el('br'),
-    txt('Strategy net on $100k across all outcomes ($0 on no-fill days): '),
+    txt(`Strategy net on ${fmtMoney(state.pos)} across all outcomes ($0 on no-fill days): `),
     el('b', { textContent: fmtNet(r.net.mean), style: 'color:' + (r.net.mean >= 0 ? '#28d17c' : '#ff5c6c') }),
     txt(` mean · median ${fmtNet(r.net.median)} · middle-90% ${fmtNet(r.net.p5)} to ${fmtNet(r.net.p95)}.`),
     el('br'),
     txt(`Exit mix: target ${pct(r.mix.targetPct)} · stop ${pct(r.mix.stopPct)} · close ${pct(r.mix.closePct)} · no-fill ${pct(r.mix.noFillPct)}.`));
 
-  const t = bottomFeedTicket({ limitPx, capital: 100000, targetPct, stopPct });
+  const t = bottomFeedTicket({ limitPx, capital: state.pos, targetPct, stopPct });
   const tt = document.getElementById('bfTicket'); tt.textContent = '';
   const trow = (label, o) => el('div', { className: 'hint', style: 'margin:5px 0' },
     el('b', { textContent: label + ' — ' + o.type + ': ' }), txt(o.note));
@@ -497,14 +525,18 @@ function renderBottomFeed(){
 function renderScorecard(){
   const { A, B, C } = scoreData;
   const host = document.getElementById('scorecard'); if(!host) return;
+  const hdr = document.getElementById('scoreHdr');
+  if (hdr) hdr.textContent = `Three-strategy scorecard — net $ on ${fmtMoney(state.pos)}`;
   host.textContent='';
   if(!A || !B || !C) return;
-  const money = (v)=> el('td', { textContent: fmtNet(v), style:'padding:6px 14px;text-align:right;color:'+(v>=0?'#28d17c':'#ff5c6c') });
+  const money = (v, se)=> el('td', {
+    textContent: fmtNet(v) + (se != null ? ` ±${Math.round(se).toLocaleString()}` : ''),
+    style:'padding:6px 14px;text-align:right;color:'+(v>=0?'#28d17c':'#ff5c6c') });
   const th = (t)=> el('th', { textContent:t, style:'padding:6px 14px;text-align:left;color:#9a8fc0;border-bottom:1px solid #2a2440' });
   const td = (t,align)=> el('td', { textContent:t, style:`padding:6px 14px;text-align:${align||'left'}` });
   const tbl = el('table', { style:'border-collapse:collapse;font-size:14px;min-width:520px' });
   tbl.append(el('tr', {}, th(''), th('A · allocation, Day-1'), th('B · bottom-feed, Day-1'), th(`C · hold to day ${C.exitDay}`)));
-  tbl.append(el('tr', {}, td('Mean net $'),   money(A.mean),   money(B.mean),   money(C.mean)));
+  tbl.append(el('tr', {}, td('Mean net $ (± MC error)'), money(A.mean, A.se), money(B.mean, B.se), money(C.mean, C.se)));
   tbl.append(el('tr', {}, td('Median net $'), money(A.median), money(B.median), money(C.median)));
   tbl.append(el('tr', {}, td('Middle-90%'),
     td(`${fmtNet(A.p5)} to ${fmtNet(A.p95)}`,'right'),
@@ -521,7 +553,7 @@ function updateLiveStrip(dis){
   setText('hlMark', '$'+hl.mark.toFixed(2));
   const chg = hl.prevDay ? (hl.mark/hl.prevDay - 1) : 0;
   setText('hlChg', (chg>=0?'+':'')+(chg*100).toFixed(1)+'% 24h');
-  const {thresh:_t,above:_a}=curveArrays(live.curve);
+  const {thresh:_t,above:_a}=curveArrays(theCurve());
   setText('polyPx', '$'+ (medianCapT(_t,_a)*1e12/state.shares).toFixed(0));
   const b = document.getElementById('liveBadge');
   b.textContent = live.status==='live' ? 'live' : live.status==='partial' ? 'partial (some last-known)' : 'last-known data';
@@ -649,21 +681,21 @@ function drawSurv(thresh, above){
 
 function bind(){
   const g=id=>document.getElementById(id);
-  g('pos').addEventListener('input',e=>{state.pos=Math.max(0,+e.target.value||0);setText('posLbl','$'+state.pos.toLocaleString());render();});
-  g('offer').addEventListener('input',e=>{state.offer=Math.max(1,+e.target.value||1);setText('offerLbl','$'+state.offer);render();});
-  g('w').addEventListener('input', e=>{ state.w=(+e.target.value)/100; setText('wLbl', e.target.value+'%'); render(); });
-  g('shares').addEventListener('input', e=>{ state.shares=Math.max(1,(+e.target.value||12.96))*1e9; setText('shLbl', (state.shares/1e9).toFixed(2)+'B'); render(); });
-  g('vol').addEventListener('input',e=>{state.vol=+e.target.value;setText('volLbl',state.vol);render();});
+  g('pos').addEventListener('input',e=>{state.pos=Math.max(0,+e.target.value||0);setText('posLbl','$'+state.pos.toLocaleString());rerender.full();});
+  g('offer').addEventListener('input',e=>{state.offer=Math.max(1,+e.target.value||1);setText('offerLbl','$'+state.offer);rerender.full();});
+  g('w').addEventListener('input', e=>{ state.w=(+e.target.value)/100; setText('wLbl', e.target.value+'%'); rerender.full(); });
+  g('shares').addEventListener('input', e=>{ state.shares=Math.max(1,(+e.target.value||12.96))*1e9; setText('shLbl', (state.shares/1e9).toFixed(2)+'B'); rerender.full(); });
+  g('vol').addEventListener('input',e=>{state.vol=+e.target.value;setText('volLbl',state.vol);rerender.full();});
   g('vol').value = state.vol; setText('volLbl', state.vol); // reflect realized-vol default
-  g('risk').addEventListener('input', e=>{ state.risk=+e.target.value; setText('riskLbl', state.risk); render(); });
-  g('openPx').addEventListener('input', e=>{ const v=+e.target.value; state.openPx = (e.target.value==='' || !(v>0)) ? null : v; render(); });
-  ['driftW','anchorS','exitDay'].forEach(id => document.getElementById(id).addEventListener('input', render));
-  ['bfLimit','bfTarget','bfStop'].forEach(id => g(id).addEventListener('input', render));
+  g('risk').addEventListener('input', e=>{ state.risk=+e.target.value; setText('riskLbl', state.risk); rerender.plan(); });
+  g('openPx').addEventListener('input', e=>{ const v=+e.target.value; state.openPx = (e.target.value==='' || !(v>0)) ? null : v; rerender.plan(); });
+  ['driftW','anchorS','exitDay'].forEach(id => document.getElementById(id).addEventListener('input', rerender.c20));
+  ['bfLimit','bfTarget','bfStop'].forEach(id => g(id).addEventListener('input', rerender.bf));
   g('reroll').addEventListener('click',()=>{SEED=(SEED*1664525+1013904223)>>>0;reseed();render();});
   g('heatChart').addEventListener('mousemove',heatHover);
   g('heatChart').addEventListener('mouseleave',()=>{document.getElementById('heatTip').style.display='none';});
   window.addEventListener('resize',()=>{ if(window._hmRT) clearTimeout(window._hmRT); window._hmRT=setTimeout(render,150); });
-  g('refresh').addEventListener('click', ()=>{ fetchLive(); }); // fetchLive defined in Task 10; safe no-op stub until then
+  g('refresh').addEventListener('click', ()=>{ fetchLive(); });
 }
 
 const HL_URL = 'https://api.hyperliquid.xyz/info';
@@ -677,7 +709,7 @@ async function fetchHyperliquid(){
       body:JSON.stringify({type:'candleSnapshot',req:{coin:'xyz:SPCX',interval:'1h',startTime:Date.now()-1000*60*60*24*21}})})
   ]);
   const hl = parseHyperliquid(await metaRes.json());
-  const vol = realizedVolFromCandles(await candleRes.json());
+  const vol = realizedVolFromCandles(await candleRes.json(), IPO_DAY_VOL_MULT);
   if(!hl) throw new Error('SPCX not found');
   return { hl, vol };
 }
