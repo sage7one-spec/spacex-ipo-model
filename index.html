@@ -79,8 +79,8 @@
   <div class="secrow"><h3>Inputs</h3><span class="ln"></span><button class="btn" id="reroll">&#8635; Re-run simulation</button></div>
   <div class="card">
     <div class="controls">
-      <div class="ctl"><label>Position size <span class="val" id="posLbl">$150,000</span></label>
-        <input type="number" id="pos" value="150000" min="1000" step="1000"><div class="hint" style="margin-top:6px">Shares ≈ position ÷ $135.</div></div>
+      <div class="ctl"><label>Position size <span class="val" id="posLbl">$100,000</span></label>
+        <input type="number" id="pos" value="100000" min="1000" step="1000"><div class="hint" style="margin-top:6px">Shares ≈ position ÷ $135.</div></div>
       <div class="ctl"><label>Allocation price (entry) <span class="val" id="offerLbl">$135</span></label>
         <input type="number" id="offer" value="135" min="1" step="1"><div class="hint" style="margin-top:6px">What Fidelity sells it to you for.</div></div>
       <div class="ctl"><label>Hyperliquid ⇄ Polymarket weight <span class="val" id="wLbl">50%</span></label>
@@ -178,7 +178,7 @@
     <b>Sources.</b> <a href="https://polymarket.com/event/spacex-ipo-closing-market-cap-above" target="_blank">Polymarket SpaceX IPO market-cap markets</a> and Hyperliquid <code>xyz:SPCX</code> synthetic pre-IPO perp. Open-to-close behavior: public mega-IPO first-day price histories.
   </div>
   <div class="disc">
-    <b>Not financial advice.</b> The June 11 2026 date and $135 price are inputs you supplied and are <b>not independently verified here</b> — no S-1 in my data, and Polymarket still resolves "No" if no IPO occurs by Dec 31 2027. The Hyperliquid <code>xyz:SPCX</code> perp is a synthetic proxy with basis risk (note the May 28 flash-crash). A $2T-scale listing may behave nothing like the historical comparables, and intraday IPO volatility can be extreme (halts, gaps). Confirm terms with Fidelity. A $150,000 position can move thousands of dollars in minutes. Size to what you can afford to lose.
+    <b>Not financial advice.</b> The June 11 2026 date and $135 price are inputs you supplied and are <b>not independently verified here</b> — no S-1 in my data, and Polymarket still resolves "No" if no IPO occurs by Dec 31 2027. The Hyperliquid <code>xyz:SPCX</code> perp is a synthetic proxy with basis risk (note the May 28 flash-crash). A $2T-scale listing may behave nothing like the historical comparables, and intraday IPO volatility can be extreme (halts, gaps). Confirm terms with Fidelity. A $100,000 position can move thousands of dollars in minutes. Size to what you can afford to lose.
     <br><br>
     <b>About the Execution Plan.</b> It models fills at 8 intraday steps (an approximation of true intraday highs/lows) and assumes limit orders fill at the rung price, the core sells at the opening print, and stops fill <i>at the stop price</i> — real fills can <b>gap through a stop</b> in a fast move or halt, so the "hold more" scenarios carry more downside than the model shows. The ~17% chance of a sub-$135 sale is largely irreducible: it is roughly the model's probability that SPCX is below your $135 basis at the open or the close, which a must-be-flat-by-close plan cannot avoid. Per this model the highest-expected-value Day-1 move is simply to sell into the open; the laddered scenarios trade a small expected haircut for upside participation plus a defined floor. The 20-day hold fan (Case C) defaults to zero drift (a martingale); the optional drift-weight and Polymarket-anchor sliders are planning aids, not forecasts. Order types, the on-close (MOC/LOC) cutoff, and stop behavior on a first-day IPO must be confirmed in your own Fidelity account; <b>selling within 15 calendar days is a flip</b> (6-month IPO-access block, first offense).
   </div>
@@ -200,7 +200,7 @@ const live = {
   status: 'snapshot'   // 'live' | 'snapshot' | 'partial'
 };
 
-const state = { pos:150000, offer:135, shares:12.96e9, w:0.5, vol:BAKED_SNAPSHOT.vol.sliderVal, N:10000, steps:8,
+const state = { pos:100000, offer:135, shares:12.96e9, w:0.5, vol:BAKED_SNAPSHOT.vol.sliderVal, N:10000, steps:8,
                 scenario:'balanced', risk:50, openPx:null }; // openPx: actual IPO opening print; null = use the model's expected open
 let SEED = 20260611;
 let rng = mulberry32(SEED);
@@ -374,12 +374,12 @@ function renderExecutionPlan(sim){
 
   // metric cards
   const cards = [
-    {k:'Expected proceeds', v:fmtMoney(r.Eproceeds), c:r.Eproceeds>=basis?'pos':'neg', s:`${fmtPct(r.Eproceeds/basis-1)} vs $${basis.toLocaleString()} basis · avg $${r.avgSalePx.toFixed(2)}/sh`},
-    {k:'Middle-90% proceeds', v:`${fmtMoney(r.p5)}–${fmtMoney(r.p95)}`, c:'neu', s:`median ${fmtMoney(r.medianProceeds)}`},
+    {k:'Expected net P&L', v:fmtNet(netDollars(r.Eproceeds, basis)), c:r.Eproceeds>=basis?'pos':'neg', s:`${fmtPct(r.Eproceeds/basis-1)} on ~$${basis.toLocaleString()} deployed · avg $${r.avgSalePx.toFixed(2)}/sh`},
+    {k:'Middle-90% net P&L', v:`${fmtNet(netDollars(r.p5, basis))} to ${fmtNet(netDollars(r.p95, basis))}`, c:'neu', s:`median ${fmtNet(netDollars(r.medianProceeds, basis))}`},
     {k:'Chance of a net loss', v:(r.pNetLoss*100).toFixed(0)+'%', c:r.pNetLoss>0.15?'neg':'pos', s:`proceeds below your $${basis.toLocaleString()} basis`},
     {k:`Chance of a sub-$${entry} sale`, v:(r.pSubBasisSale*100).toFixed(0)+'%', c:r.pSubBasisSale>0.2?'neg':'neu', s:`≈ ${Math.round(r.eSharesSubBasis)} sh on average`},
     {k:'Sell mix', v:`${(r.mix.openPct*100).toFixed(0)}% open`, c:'neu', s:`${(r.mix.upsidePct*100).toFixed(0)}% rungs · ${(r.mix.stopPct*100).toFixed(0)}% stop · ${(r.mix.closePct*100).toFixed(0)}% close`},
-    {k:'vs sell-all-at-open', v:fmtMoney(r.Eproceeds-atOpen.Eproceeds), c:r.Eproceeds>=atOpen.Eproceeds?'pos':'neg', s:`open avg $${atOpen.avgSalePx.toFixed(2)} · hold-to-close ${fmtMoney(toClose.Eproceeds)}`},
+    {k:'vs sell-all-at-open', v:fmtNet(r.Eproceeds-atOpen.Eproceeds), c:r.Eproceeds>=atOpen.Eproceeds?'pos':'neg', s:`open avg $${atOpen.avgSalePx.toFixed(2)} · hold-to-close net ${fmtNet(netDollars(toClose.Eproceeds, basis))}`},
   ];
   const M = document.getElementById('execMetrics'); M.textContent='';
   cards.forEach(m=> M.append(el('div', { className:'metric' },
