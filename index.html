@@ -317,13 +317,13 @@ function render20Day(sim, entry){
   });
 
   const cShares = 100000 / entry;                                 // shares the $100k allocation buys at $135
-  const b = bands[exitDay - 1];
+  const b = bands[exitDay];
   const out = document.getElementById('fan20Out'); out.textContent='';
   out.append(
     el('b', { textContent: `Case C — hold to day ${exitDay}: ` }),
     txt('median '),
-    el('b', { textContent: fmtNet(netDollars(cShares * b.median - 100000)), style:'color:'+(b.median>=entry?'#28d17c':'#ff5c6c') }),
-    txt(` on $100k (middle-90% ${fmtNet(netDollars(cShares*b.p5 - 100000))} to ${fmtNet(netDollars(cShares*b.p95 - 100000))}). `),
+    el('b', { textContent: fmtNet(netDollars(cShares * b.median)), style:'color:'+(b.median>=entry?'#28d17c':'#ff5c6c') }),
+    txt(` on $100k (middle-90% ${fmtNet(netDollars(cShares*b.p5))} to ${fmtNet(netDollars(cShares*b.p95))}). `),
     el('b', { textContent: (b.pBelow*100).toFixed(0)+'% underwater', style:'color:'+(b.pBelow>0.33?'#ff5c6c':'#ffb648') }),
     txt(` (below your $${entry} basis at day ${exitDay}).`));
 }
