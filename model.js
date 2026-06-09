@@ -295,15 +295,17 @@ export function ticketsFromPolicy(policy, opts = {}) {
 // Fidelity ATP order set for Case B: a buy-limit at/below the limit, an OCO bracket
 // attached on fill, and an MOC/LOC residual. Mirrors the bottom-feeder execution.
 export function bottomFeedTicket(cfg) {
+  const px = (n) => n.toFixed(2);
   const { limitPx = 135, capital = 100000, targetPct = 0.06, stopPct = 0.05 } = cfg;
   const shares = Math.round(capital / limitPx);
   const target = +(limitPx * (1 + targetPct)).toFixed(2);
   const stop = +(limitPx * (1 - stopPct)).toFixed(2);
   const lim = +limitPx.toFixed(2);
+  // all three tickets reference the same lot; the OCO bracket and the MOC residual are mutually exclusive exit paths, not additive lots.
   return {
     entry: {
       type: 'BUY LIMIT', shares, limitPx: lim, tif: 'Day',
-      note: `Buy ${shares} sh limit $${lim.toFixed(2)} — deploys ~$${(shares * lim).toLocaleString()} only if SPCX trades down to your limit. If it never prints ≤ $${lim.toFixed(2)}, nothing fills and you keep $${capital.toLocaleString()} in cash.`,
+      note: `Buy ${shares} sh limit $${px(lim)} — deploys ~$${(shares * lim).toLocaleString()} only if SPCX trades down to your limit. If it never prints ≤ $${px(lim)}, nothing fills and you keep $${capital.toLocaleString()} in cash.`,
     },
     bracket: {
       type: 'OCO (attach on fill)', shares, sellLimitPx: target, sellStopPx: stop, tif: 'Day',
