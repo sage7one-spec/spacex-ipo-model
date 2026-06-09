@@ -328,3 +328,16 @@ export function conditionalRecovery(grid, entry, ks = [1, 2, 3]) {
     return { k, frac: k / steps, dips, p: dips ? recover / dips : null };
   });
 }
+
+// ---- Reporting helpers (Phase 3): everything is net absolute dollars on a fixed basis ----
+
+export function netDollars(proceeds, capital = 100000) {
+  return proceeds - capital;
+}
+
+// Signed absolute-dollar string. Rounds to whole dollars; exact zero prints unsigned "$0".
+export function fmtNet(dollars) {
+  const r = Math.round(dollars);
+  if (r === 0) return '$0';
+  return `${r > 0 ? '+' : '-'}$${Math.abs(r).toLocaleString('en-US')}`;
+}

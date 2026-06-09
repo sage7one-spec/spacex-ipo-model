@@ -14,6 +14,7 @@ import {
   buildScenario,
   ticketsFromPolicy,
   simulateDay16, buildDay16Policy,
+  netDollars, fmtNet,
 } from '../model.js';
 
 const polyEvent = JSON.parse(readFileSync(new URL('./fixtures/poly-event.json', import.meta.url)));
@@ -264,4 +265,19 @@ test('simulateDay16 grid is scorable by evaluatePolicy', () => {
   const r = evaluatePolicy({ grid: d16.grid, entry: 135 }, buildDay16Policy(135, 1111, d16.meanLevel16));
   assert.ok(r.Eproceeds > 0);
   assert.ok(r.pSubBasisSale >= 0 && r.pSubBasisSale <= 1);
+});
+
+test('netDollars subtracts the $100k basis by default', () => {
+  assert.equal(netDollars(125000), 25000);
+  assert.equal(netDollars(88000), -12000);
+  assert.equal(netDollars(100000), 0);
+  assert.equal(netDollars(150000, 150000), 0);
+});
+
+test('fmtNet renders signed absolute dollars with thousands separators', () => {
+  assert.equal(fmtNet(25000), '+$25,000');
+  assert.equal(fmtNet(-12300), '-$12,300');
+  assert.equal(fmtNet(0), '$0');
+  assert.equal(fmtNet(-0.4), '$0');      // rounds to zero → no sign
+  assert.equal(fmtNet(999.6), '+$1,000');
 });
