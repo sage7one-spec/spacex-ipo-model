@@ -97,6 +97,12 @@
   <div class="secrow"><h3>Verdict</h3><span class="ln"></span></div>
   <div class="verdict"><div class="lead" id="verdict"></div></div>
 
+  <section class="card" id="scoreSection" style="margin-top:16px">
+    <div class="secrow"><h2>Three-strategy scorecard — net $ on $100,000</h2><span class="ln"></span></div>
+    <p class="hint">Every figure is net absolute dollar change on a $100,000 benchmark. <b>A</b> = buy the $135 allocation, sell Day 1. <b>B</b> = bottom-feed a Day-1 dip ≤ $135 in the open market (cash; $0 when it never fills). <b>C</b> = hold the $135 allocation to the chosen exit day.</p>
+    <div id="scorecard" style="overflow-x:auto"></div>
+  </section>
+
   <div class="secrow"><h3>Intraday Probability — where the price trades, hour by hour</h3><span class="ln"></span></div>
   <div class="card">
     <h2>Probability heatmap — price &times; hour</h2>
@@ -233,6 +239,7 @@ function cls(x){return x>0.001?'pos':x<-0.001?'neg':'neu';}
 function setText(id,t){document.getElementById(id).textContent=t;}
 
 let closeChart,rangeChart,survChart,touchChart,fan20Chart;
+const scoreData = { A:null, B:null, C:null };
 const GRID='#1a2336',TICK='#8b97ad',PUR='#7c5cff',BLUE='#4da3ff';
 const baseOpts=(e={})=>Object.assign({responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
   scales:{x:{grid:{color:GRID},ticks:{color:TICK}},y:{grid:{color:GRID},ticks:{color:TICK}}}},e);
@@ -293,6 +300,7 @@ function render(){
   drawSurv(thresh,above);
   renderExecutionPlan(sim);
   renderBottomFeed();
+  renderScorecard();
 }
 
 function fmtMoney(x){ return '$'+Math.round(x).toLocaleString(); }
@@ -334,6 +342,10 @@ function render20Day(sim, entry){
 
   const cShares = 100000 / entry;                                 // shares the $100k allocation buys at $135
   const b = bands[exitDay];
+  const meanColC = pip.grid[exitDay].reduce((a,c)=>a+c,0) / pip.grid[exitDay].length;
+  scoreData.C = { exitDay, mean: netDollars(cShares*meanColC), median: netDollars(cShares*b.median),
+    p5: netDollars(cShares*b.p5), p95: netDollars(cShares*b.p95), pLoss: b.pBelow,
+    sig: `Underwater @ day ${exitDay}: ${(b.pBelow*100).toFixed(0)}%` };
   const out = document.getElementById('fan20Out'); out.textContent='';
   out.append(
     el('b', { textContent: `Case C — hold to day ${exitDay}: ` }),
@@ -397,6 +409,9 @@ function renderExecutionPlan(sim){
     {k:'Sell mix', v:`${(r.mix.openPct*100).toFixed(0)}% open`, c:'neu', s:`${(r.mix.upsidePct*100).toFixed(0)}% rungs · ${(r.mix.stopPct*100).toFixed(0)}% stop · ${(r.mix.closePct*100).toFixed(0)}% close`},
     {k:'vs sell-all-at-open', v:fmtNet(r.Eproceeds-atOpen.Eproceeds), c:r.Eproceeds>=atOpen.Eproceeds?'pos':'neg', s:`open avg $${atOpen.avgSalePx.toFixed(2)} · hold-to-close net ${fmtNet(netDollars(toClose.Eproceeds, basis))}`},
   ];
+  scoreData.A = { mean: netDollars(r.Eproceeds, basis), median: netDollars(r.medianProceeds, basis),
+    p5: netDollars(r.p5, basis), p95: netDollars(r.p95, basis), pLoss: r.pNetLoss,
+    sig: `Sub-$${entry} sale ${(r.pSubBasisSale*100).toFixed(0)}%` };
   const M = document.getElementById('execMetrics'); M.textContent='';
   cards.forEach(m=> M.append(el('div', { className:'metric' },
     el('div', { className:'k', textContent:m.k }),
@@ -455,6 +470,9 @@ function renderBottomFeed(){
   setText('bfStopLbl', (stopPct * 100).toFixed(0) + '%');
 
   const r = simulateBottomFeed({ grid: fineSim.grid }, { limitPx, capital: 100000, targetPct, stopPct });
+  scoreData.B = { mean: r.net.mean, median: r.net.median, p5: r.net.p5, p95: r.net.p95,
+    pLoss: r.nets.filter(x=>x<0).length / r.nets.length,
+    sig: `Fills ${(r.pFill*100).toFixed(0)}% · no-fill ${(r.pNoFill*100).toFixed(0)}%` };
   const pct = (x) => (x * 100).toFixed(0) + '%';
 
   const out = document.getElementById('bfOut'); out.textContent = '';
@@ -474,6 +492,28 @@ function renderBottomFeed(){
   const trow = (label, o) => el('div', { className: 'hint', style: 'margin:5px 0' },
     el('b', { textContent: label + ' — ' + o.type + ': ' }), txt(o.note));
   tt.append(trow('Entry', t.entry), trow('Bracket', t.bracket), trow('Residual', t.residual));
+}
+
+function renderScorecard(){
+  const { A, B, C } = scoreData;
+  const host = document.getElementById('scorecard'); if(!host) return;
+  host.textContent='';
+  if(!A || !B || !C) return;
+  const money = (v)=> el('td', { textContent: fmtNet(v), style:'padding:6px 14px;text-align:right;color:'+(v>=0?'#28d17c':'#ff5c6c') });
+  const th = (t)=> el('th', { textContent:t, style:'padding:6px 14px;text-align:left;color:#9a8fc0;border-bottom:1px solid #2a2440' });
+  const td = (t,align)=> el('td', { textContent:t, style:`padding:6px 14px;text-align:${align||'left'}` });
+  const tbl = el('table', { style:'border-collapse:collapse;font-size:14px;min-width:520px' });
+  tbl.append(el('tr', {}, th(''), th('A · allocation, Day-1'), th('B · bottom-feed, Day-1'), th(`C · hold to day ${C.exitDay}`)));
+  tbl.append(el('tr', {}, td('Mean net $'),   money(A.mean),   money(B.mean),   money(C.mean)));
+  tbl.append(el('tr', {}, td('Median net $'), money(A.median), money(B.median), money(C.median)));
+  tbl.append(el('tr', {}, td('Middle-90%'),
+    td(`${fmtNet(A.p5)} to ${fmtNet(A.p95)}`,'right'),
+    td(`${fmtNet(B.p5)} to ${fmtNet(B.p95)}`,'right'),
+    td(`${fmtNet(C.p5)} to ${fmtNet(C.p95)}`,'right')));
+  tbl.append(el('tr', {}, td('P(loss)'),
+    td((A.pLoss*100).toFixed(0)+'%','right'), td((B.pLoss*100).toFixed(0)+'%','right'), td((C.pLoss*100).toFixed(0)+'%','right')));
+  tbl.append(el('tr', {}, td('Key odds'), td(A.sig), td(B.sig), td(C.sig)));
+  host.append(tbl);
 }
 
 function updateLiveStrip(dis){
