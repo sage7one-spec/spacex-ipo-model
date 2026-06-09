@@ -34,7 +34,9 @@ $100,000), sell on Day 1 using the laddered plan below. Net $ reflects the gain 
 **Case B — Bottom-Feeder (separate $100,000 CASH play).** A limit BUY that fills only if SPCX
 trades *down* to a target price (default $135) at some point on Day 1; an OCO bracket (profit
 target / stop-loss) exits the same day. If the stock never dips to the limit, nothing fills →
-exactly **$0 net, $100,000 fully preserved** (the No-Execution safety state). On the baked snapshot
+exactly **$0 net, capital fully preserved** (the No-Execution safety state). If the open prints
+*below* the limit, the buy fills at the open (price improvement), and the bracket stop never
+exits above the actual fill. On the baked snapshot
 the fill probability is ~24%, and of those fills the majority hit the stop rather than the target
 (the dip tends to keep falling) — so the unconditional strategy EV is roughly break-even to
 slightly negative. The reported net-$ distribution **includes the $0 no-fill days**; that is the
@@ -63,6 +65,7 @@ baked snapshot roughly 20% of paths are underwater at the Day-1 close, rising to
   `postIpoBands`, `MEGA_IPO_POSTIPO_CURVE`, `netDollars`, `fmtNet`. Removed: `simulateDay16`,
   `buildDay16Policy`.
 - `snapshot.js` — `BAKED_SNAPSHOT` fallback data.
+- `vendor/chart.umd.min.js` — Chart.js 4.4.1 bundled locally (no CDN dependency on IPO morning).
 - `test/` — unit tests + captured API fixtures.
 
 ## Blending weights

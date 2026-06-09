@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SpaceX IPO — Day-1 Intraday Model ($135 allocation)</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="./vendor/chart.umd.min.js"></script>
 <style>
   :root{--panel:#121826;--panel2:#0f1420;--line:#1e2940;--txt:#e7ecf5;--muted:#8b97ad;
     --accent:#7c5cff;--blue:#4da3ff;--green:#28d17c;--red:#ff5c6c;--amber:#ffb648;--grid:#1a2336;}
@@ -736,7 +736,7 @@ async function fetchLive(){
 
 if(typeof Chart==='undefined'){
   const w=document.querySelector('.wrap');const d=document.createElement('div');d.className='disc';
-  d.textContent='⚠ Charts could not load. This page pulls the Chart.js graphing library from the internet (cdn.jsdelivr.net). Connect to the internet and reload, or tell me and I will build an offline version with the library embedded.';
+  d.textContent='⚠ Charts could not load. The bundled Chart.js library (vendor/chart.umd.min.js) failed to load — make sure the vendor/ folder is deployed alongside index.html, then reload.';
   w.insertBefore(d,w.children[1]);
 } else { bind(); render(); fetchLive(); }
 </script>

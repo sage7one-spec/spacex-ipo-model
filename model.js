@@ -21,10 +21,27 @@ export function parsePolymarketCurve(eventJson) {
     rows.push({ capT: cap / 1e12, pAbove: pAbove * 100 });
   }
   rows.sort((a, b) => a.capT - b.capT);
-  for (let i = 1; i < rows.length; i++) {
-    if (rows[i].pAbove > rows[i-1].pAbove) rows[i].pAbove = rows[i-1].pAbove; // clamp thin-market noise
-  }
+  // Thin-market noise can violate monotonicity; project onto the nearest non-increasing
+  // sequence with pool-adjacent-violators (isotonic regression) — averages the violating
+  // run instead of one-sidedly truncating later values down.
+  const fitted = pavaNonIncreasing(rows.map(r => r.pAbove));
+  for (let i = 0; i < rows.length; i++) rows[i].pAbove = fitted[i];
   return rows; // [{capT in $T, pAbove in %}]
+}
+
+function pavaNonIncreasing(v) {
+  const blocks = [];
+  for (const x of v) {
+    blocks.push({ sum: x, n: 1 });
+    while (blocks.length > 1) {
+      const b = blocks[blocks.length - 1], a = blocks[blocks.length - 2];
+      if (a.sum / a.n >= b.sum / b.n - 1e-12) break;
+      a.sum += b.sum; a.n += b.n; blocks.pop();
+    }
+  }
+  const out = [];
+  for (const b of blocks) for (let i = 0; i < b.n; i++) out.push(b.sum / b.n);
+  return out;
 }
 
 export function curveArrays(curve) {
@@ -59,10 +76,21 @@ export function normalizeTimingCurve(rows, pIpo = null) {
 }
 
 // Inverse-CDF of closing market cap ($T) at survival level u ∈ [0,100).
+// Tails extend the quoted buckets instead of using fixed magic offsets:
+//   lower — continue the first bucket's inverse-CDF slope (uniform density), floored at thresh[0]/2;
+//   upper — exponential survival fitted to the last two buckets, clamped at 2·thresh[last].
 export function sampleCapU(thresh, above, u) {
   const last = above.length - 1;
-  if (u >= above[0]) { const f = (u - above[0]) / ((100 - above[0]) || 1); return thresh[0] * (1 - f * 0.15); } // below lowest quoted threshold: extrapolate up to 15% under it
-  if (u <= above[last]) { const f = (above[last] - u) / (above[last] || 1); return thresh[last] + f * (thresh[last] * 0.375); } // above highest quoted threshold: extrapolate up to 37.5% over it
+  if (u >= above[0]) {
+    if (last < 1 || above[0] <= above[1]) return thresh[0];
+    const slope = (thresh[1] - thresh[0]) / (above[0] - above[1]);
+    return Math.max(thresh[0] * 0.5, thresh[0] - (u - above[0]) * slope);
+  }
+  if (u <= above[last]) {
+    if (last < 1 || above[last] <= 0 || above[last - 1] <= above[last]) return thresh[last];
+    const lambda = Math.log(above[last - 1] / above[last]) / (thresh[last] - thresh[last - 1]);
+    return Math.min(thresh[last] * 2, thresh[last] + Math.log(above[last] / Math.max(u, 1e-12)) / lambda);
+  }
   for (let i = 0; i < last; i++) {
     if (above[i] >= u && u >= above[i + 1]) {
       const f = (above[i] - u) / ((above[i] - above[i + 1]) || 1);
@@ -488,20 +516,26 @@ export function simulateBottomFeed(paths, cfg) {
     }
     if (eFill < 0) { nets[p] = 0; noFill++; continue; }   // No-Execution safety state
     fills++;
+    // A resting limit fills at the limit when price trades down through it — except at the
+    // open, where the opening print is the first price: open < limit fills at the open.
+    const fillPx = (eFill === 0) ? Math.min(limitPx, grid[0][p]) : limitPx;
+    // If the fill lands at/below the bracket stop, the stop leg is instantly marketable —
+    // it exits ≈ the fill price, never above it (no fake stop−fill gain on a gap-down open).
+    const stopExit = Math.min(stop, fillPx);
     let exitPx = null;
     for (let e = eFill + 1; e <= 2 * steps && exitPx == null; e++) {
       if (e % 2 === 0) {
         const price = grid[e / 2][p];
-        if (price >= target)      { exitPx = target; targetHits++; }
-        else if (price <= stop)   { exitPx = stop;   stopHits++; }
+        if (price >= target)      { exitPx = target;   targetHits++; }
+        else if (price <= stop)   { exitPx = stopExit; stopHits++; }
       } else if (hasIv) {
         const k = (e - 1) / 2;
-        if (gridMax[k][p] >= target)    { exitPx = target; targetHits++; }
-        else if (gridMin[k][p] <= stop) { exitPx = stop;   stopHits++; }
+        if (gridMax[k][p] >= target)    { exitPx = target;   targetHits++; }
+        else if (gridMin[k][p] <= stop) { exitPx = stopExit; stopHits++; }
       }
     }
     if (exitPx == null) { exitPx = grid[steps][p]; closeHits++; }      // residual to close
-    nets[p] = shares * exitPx - capital;
+    nets[p] = shares * (exitPx - fillPx);
   }
 
   const sorted = [...nets].sort((a, b) => a - b);

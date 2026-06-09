@@ -536,6 +536,64 @@ test('ticketsFromPolicy: checkpoint stop covers only shares without an OCO brack
   assert.match(t.checkpoints[0].action, /OCO|residual/i);
 });
 
+// ---- v5 quick fixes: PAVA clamp, fitted tails, Case B fill realism ----
+
+test('parsePolymarketCurve: pools adjacent violators instead of one-sided truncation', () => {
+  const ev = [{ markets: [
+    { question: 'above $1T?', outcomePrices: '["0.90","0.10"]' },
+    { question: 'above $2T?', outcomePrices: '["0.95","0.05"]' },   // thin-market violation
+    { question: 'above $3T?', outcomePrices: '["0.50","0.50"]' },
+  ]}];
+  const c = parsePolymarketCurve(ev);
+  assert.equal(c.length, 3);
+  // PAVA averages the violating pair (90,95) → (92.5, 92.5); old clamp truncated to (90, 90)
+  assert.ok(Math.abs(c[0].pAbove - 92.5) < 1e-9, `got ${c[0].pAbove}`);
+  assert.ok(Math.abs(c[1].pAbove - 92.5) < 1e-9, `got ${c[1].pAbove}`);
+  assert.equal(c[2].pAbove, 50);
+});
+
+test('sampleCapU: tails are continuous at the boundary buckets', () => {
+  const thresh = [1, 2, 3], above = [90, 50, 10];
+  assert.ok(Math.abs(sampleCapU(thresh, above, 90) - 1) < 1e-9);
+  assert.ok(Math.abs(sampleCapU(thresh, above, 10) - 3) < 1e-9);
+});
+
+test('sampleCapU: lower tail continues the first bucket inverse-CDF slope', () => {
+  const thresh = [1, 2, 3], above = [90, 50, 10];
+  // slope = (2−1)/(90−50) = 0.025 $T per percent; u=100 → 1 − 10·0.025 = 0.75
+  assert.ok(Math.abs(sampleCapU(thresh, above, 100) - 0.75) < 1e-9);
+  // floored at half the lowest threshold
+  const steep = sampleCapU([1, 1.01], [90, 1], 100);
+  assert.ok(steep >= 0.5 - 1e-9);
+});
+
+test('sampleCapU: upper tail is exponential fitted to the last two buckets, clamped at 2× the top threshold', () => {
+  const thresh = [1, 2, 3], above = [90, 50, 10];
+  // λ = ln(50/10)/(3−2) = ln 5; u=5 → 3 + ln(10/5)/ln 5
+  const expected = 3 + Math.log(2) / Math.log(5);
+  assert.ok(Math.abs(sampleCapU(thresh, above, 5) - expected) < 1e-9);
+  assert.ok(sampleCapU(thresh, above, 1e-9) <= 6 + 1e-9);   // clamp
+  // monotone: deeper into the tail → larger cap
+  assert.ok(sampleCapU(thresh, above, 2) > sampleCapU(thresh, above, 8));
+});
+
+test('simulateBottomFeed: open below the limit fills at the open price (price improvement)', () => {
+  // wide bracket so nothing triggers → residual sells at close; profit = close − open
+  const paths = gridFromPath([120, 121, 122, 123]);
+  const r = simulateBottomFeed(paths, { limitPx: 135, capital: 100000, targetPct: 0.5, stopPct: 0.5 });
+  const shares = 100000 / 135;
+  assert.equal(r.pFill, 1);
+  assert.ok(Math.abs(r.nets[0] - shares * (123 - 120)) < 1e-6, `got ${r.nets[0]}`);
+});
+
+test('simulateBottomFeed: bracket stop never exits above the actual fill price', () => {
+  // fill at open 120; stop leg (128.25) is instantly marketable → flat exit, not a fake +stop−fill gain
+  const paths = gridFromPath([120, 121, 122, 123]);
+  const r = simulateBottomFeed(paths, { limitPx: 135, capital: 100000, targetPct: 0.06, stopPct: 0.05 });
+  assert.ok(Math.abs(r.nets[0] - 0) < 1e-6, `got ${r.nets[0]}`);
+  assert.equal(r.mix.stopPct, 1);
+});
+
 test('postIpoBands: pBelow grows with horizon for a martingale started above the level', () => {
   const closes = Array.from({ length: 4000 }, () => 165);
   const r = simulatePostIPO({ closes, dailySigma: 0.03, rng: mulberry32(17), days: 20 });
