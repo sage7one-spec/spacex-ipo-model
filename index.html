@@ -156,6 +156,20 @@
   <h3 style="margin-top:14px">Intraday checkpoints</h3>
   <div id="checkpointList" class="hint"></div>
 
+  <h3 style="margin-top:16px">Case B — bottom-feeder: buy the Day-1 dip ≤ $135 (open market, no 16-day lock)</h3>
+  <p class="hint">A separate $100,000 cash play: a limit BUY that fills only if SPCX trades down to your price on Day 1, then an OCO bracket (profit target / stop) exits the same day. If it never dips to your limit, nothing fills — you keep $100,000, $0 change.</p>
+  <div class="ctlrow" style="display:flex;gap:18px;flex-wrap:wrap">
+    <div class="ctl"><label>Limit buy price <span class="val" id="bfLimitLbl">$135</span></label>
+      <input type="number" id="bfLimit" value="135" min="1" step="1"><div class="hint">Fills only if the day trades at/below this.</div></div>
+    <div class="ctl"><label>Profit target <span class="val" id="bfTargetLbl">6%</span></label>
+      <input type="range" id="bfTarget" min="0" max="30" value="6"><div class="hint">Sell-limit above your fill.</div></div>
+    <div class="ctl"><label>Stop loss <span class="val" id="bfStopLbl">5%</span></label>
+      <input type="range" id="bfStop" min="0" max="30" value="5"><div class="hint">Sell-stop below your fill.</div></div>
+  </div>
+  <div id="bfOut" class="verdict" style="margin:10px 0"></div>
+  <h4 style="margin-top:10px">Fidelity tickets (Case B)</h4>
+  <div id="bfTicket"></div>
+
   <h3 style="margin-top:16px">Case C — hold the $135 allocation: 20-day probability fan</h3>
   <p class="hint">If Fidelity locks the allocation for the ~16-day flip window, this is the daily price distribution over the first 20 trading days. The dashed amber line is your $135 basis — bands below it are underwater. Median = white line.</p>
   <div class="cbox"><canvas id="fan20"></canvas></div>
@@ -188,7 +202,8 @@
 import { mulberry32, parsePolymarketCurve, curveArrays, parseHyperliquid,
          realizedVolFromCandles, medianCapT, disagreement, simulateDayOne,
          evaluatePolicy, sellAllAt, conditionalRecovery, buildScenario, SCENARIO_NAMES,
-         ticketsFromPolicy, simulatePostIPO, postIpoBands, netDollars, fmtNet } from './model.js';
+         ticketsFromPolicy, simulatePostIPO, postIpoBands, netDollars, fmtNet,
+         simulateBottomFeed, bottomFeedTicket } from './model.js';
 import { BAKED_SNAPSHOT } from './snapshot.js';
 
 // Live data store — starts as the baked snapshot, replaced by fetchLive() in Task 10.
@@ -277,6 +292,7 @@ function render(){
   drawRange(lows,highs,entry);
   drawSurv(thresh,above);
   renderExecutionPlan(sim);
+  renderBottomFeed();
 }
 
 function fmtMoney(x){ return '$'+Math.round(x).toLocaleString(); }
@@ -427,6 +443,39 @@ function renderExecutionPlan(sim){
   render20Day(sim, entry);
 }
 
+function renderBottomFeed(){
+  const { thresh, above } = curveArrays(live.curve);
+  const fineSim = simulateDayOne({ thresh, above, shares: state.shares, hlMark: live.hl.mark,
+    w: state.w, offer: state.offer, vol: state.vol, N: state.N, steps: 26, rng: mulberry32(SEED + 30) });
+  const limitPx = Math.max(1, +document.getElementById('bfLimit').value || 135);
+  const targetPct = Math.max(0, (+document.getElementById('bfTarget').value || 0) / 100);
+  const stopPct = Math.max(0, (+document.getElementById('bfStop').value || 0) / 100);
+  setText('bfLimitLbl', '$' + limitPx);
+  setText('bfTargetLbl', (targetPct * 100).toFixed(0) + '%');
+  setText('bfStopLbl', (stopPct * 100).toFixed(0) + '%');
+
+  const r = simulateBottomFeed({ grid: fineSim.grid }, { limitPx, capital: 100000, targetPct, stopPct });
+  const pct = (x) => (x * 100).toFixed(0) + '%';
+
+  const out = document.getElementById('bfOut'); out.textContent = '';
+  out.append(
+    el('b', { textContent: `Fill odds ${pct(r.pFill)}` }),
+    txt(` — the day trades down to your $${limitPx} limit; `),
+    el('b', { textContent: `${pct(r.pNoFill)} no-fill (keep $100,000, $0)` }),
+    txt('. '), el('br'),
+    txt('Strategy net on $100k across all outcomes ($0 on no-fill days): '),
+    el('b', { textContent: fmtNet(r.net.mean), style: 'color:' + (r.net.mean >= 0 ? '#28d17c' : '#ff5c6c') }),
+    txt(` mean · median ${fmtNet(r.net.median)} · middle-90% ${fmtNet(r.net.p5)} to ${fmtNet(r.net.p95)}.`),
+    el('br'),
+    txt(`Exit mix: target ${pct(r.mix.targetPct)} · stop ${pct(r.mix.stopPct)} · close ${pct(r.mix.closePct)} · no-fill ${pct(r.mix.noFillPct)}.`));
+
+  const t = bottomFeedTicket({ limitPx, capital: 100000, targetPct, stopPct });
+  const tt = document.getElementById('bfTicket'); tt.textContent = '';
+  const trow = (label, o) => el('div', { className: 'hint', style: 'margin:5px 0' },
+    el('b', { textContent: label + ' — ' + o.type + ': ' }), txt(o.note));
+  tt.append(trow('Entry', t.entry), trow('Bracket', t.bracket), trow('Residual', t.residual));
+}
+
 function updateLiveStrip(dis){
   const hl = live.hl;
   setText('hlMark', '$'+hl.mark.toFixed(2));
@@ -569,6 +618,7 @@ function bind(){
   g('risk').addEventListener('input', e=>{ state.risk=+e.target.value; setText('riskLbl', state.risk); render(); });
   g('openPx').addEventListener('input', e=>{ const v=+e.target.value; state.openPx = (e.target.value==='' || !(v>0)) ? null : v; render(); });
   ['driftW','anchorS','exitDay'].forEach(id => document.getElementById(id).addEventListener('input', render));
+  ['bfLimit','bfTarget','bfStop'].forEach(id => g(id).addEventListener('input', render));
   g('reroll').addEventListener('click',()=>{SEED=(SEED*1664525+1013904223)>>>0;reseed();render();});
   g('heatChart').addEventListener('mousemove',heatHover);
   g('heatChart').addEventListener('mouseleave',()=>{document.getElementById('heatTip').style.display='none';});
