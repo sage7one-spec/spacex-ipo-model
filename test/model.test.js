@@ -17,6 +17,7 @@ import {
   simulateBottomFeed,
   bottomFeedTicket,
   MEGA_IPO_POSTIPO_CURVE, simulatePostIPO,
+  postIpoBands,
 } from '../model.js';
 
 const polyEvent = JSON.parse(readFileSync(new URL('./fixtures/poly-event.json', import.meta.url)));
@@ -353,4 +354,24 @@ test('simulatePostIPO: Polymarket anchor pulls the terminal toward the implied l
 test('MEGA_IPO_POSTIPO_CURVE is a 21-point normalized level curve starting at 1.0', () => {
   assert.equal(MEGA_IPO_POSTIPO_CURVE.length, 21);
   assert.equal(MEGA_IPO_POSTIPO_CURVE[0], 1.0);
+});
+
+test('postIpoBands: ordered percentile bands per day + pBelow in [0,1]', () => {
+  const closes = Array.from({ length: 3000 }, () => 165);
+  const r = simulatePostIPO({ closes, dailySigma: 0.03, rng: mulberry32(9), days: 20 });
+  const bands = postIpoBands(r.grid, 135);
+  assert.equal(bands.length, 21);
+  for (const b of bands) {
+    assert.ok(b.p5 <= b.p25 && b.p25 <= b.median && b.median <= b.p75 && b.p75 <= b.p95);
+    assert.ok(b.pBelow >= 0 && b.pBelow <= 1);
+  }
+  assert.equal(bands[0].day, 0);
+  assert.equal(bands[20].day, 20);
+});
+
+test('postIpoBands: pBelow grows with horizon for a martingale started above the level', () => {
+  const closes = Array.from({ length: 4000 }, () => 165);
+  const r = simulatePostIPO({ closes, dailySigma: 0.03, rng: mulberry32(17), days: 20 });
+  const bands = postIpoBands(r.grid, 135);
+  assert.ok(bands[20].pBelow >= bands[5].pBelow, 'later-day underwater prob should not shrink');
 });

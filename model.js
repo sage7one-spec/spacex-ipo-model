@@ -385,6 +385,23 @@ export function fmtNet(dollars) {
   return `${r > 0 ? '+' : '-'}$${Math.abs(r).toLocaleString('en-US')}`;
 }
 
+// Per-day percentile envelope + P(price < belowLevel) for the fan chart.
+export function postIpoBands(grid, belowLevel = 135) {
+  const days = grid.length - 1, N = grid[0].length;
+  const pctAt = (col, q) => { const s = [...col].sort((a, b) => a - b); const i = (N - 1) * q, lo = Math.floor(i), hi = Math.ceil(i); return s[lo] + (s[hi] - s[lo]) * (i - lo); };
+  const out = [];
+  for (let d = 0; d <= days; d++) {
+    const col = grid[d];
+    let below = 0; for (let p = 0; p < N; p++) if (col[p] < belowLevel) below++;
+    out.push({
+      day: d,
+      p5: pctAt(col, 0.05), p25: pctAt(col, 0.25), median: pctAt(col, 0.5),
+      p75: pctAt(col, 0.75), p95: pctAt(col, 0.95), pBelow: below / N,
+    });
+  }
+  return out;
+}
+
 // ---- Case B: open-market bottom-feeder (Phase 1) -----------------------------
 // Buys the full capital at a limit (default $135) the first step price <= limitPx,
 // then exits via an OCO bracket: sell-limit at +targetPct, sell-stop at -stopPct,
