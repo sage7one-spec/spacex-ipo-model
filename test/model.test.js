@@ -16,6 +16,7 @@ import {
   netDollars, fmtNet,
   simulateBottomFeed,
   bottomFeedTicket,
+  MEGA_IPO_POSTIPO_CURVE, simulatePostIPO,
 } from '../model.js';
 
 const polyEvent = JSON.parse(readFileSync(new URL('./fixtures/poly-event.json', import.meta.url)));
@@ -313,4 +314,43 @@ test('bottomFeedTicket: buy-limit + OCO bracket + MOC residual', () => {
   assert.equal(t.bracket.sellStopPx, +(135 * 0.95).toFixed(2));  // 128.25
   assert.equal(t.residual.type, 'MOC');
   assert.ok(t.entry.note.includes('keep'));   // no-fill safety messaging
+});
+
+test('simulatePostIPO: deterministic; grid shape (days+1)×N; grid[0] === closes', () => {
+  const closes = [100, 120, 140, 160, 180];
+  const a = simulatePostIPO({ closes, dailySigma: 0.03, rng: mulberry32(7), days: 20 });
+  const b = simulatePostIPO({ closes, dailySigma: 0.03, rng: mulberry32(7), days: 20 });
+  assert.equal(a.grid.length, 21);
+  assert.equal(a.grid[0].length, closes.length);
+  for (let p = 0; p < closes.length; p++) assert.equal(a.grid[0][p], closes[p]);
+  assert.equal(a.grid[20][0], b.grid[20][0]); // same seed → identical
+});
+
+test('simulatePostIPO: martingale (no drift, no anchor) keeps mean ≈ start mean', () => {
+  const closes = Array.from({ length: 4000 }, () => 165);
+  const r = simulatePostIPO({ closes, dailySigma: 0.03, rng: mulberry32(11), days: 20 });
+  const startMean = 165;
+  const endMean = r.grid[20].reduce((a, b) => a + b, 0) / closes.length;
+  assert.ok(Math.abs(endMean / startMean - 1) < 0.03, `endMean ${endMean} drifted from ${startMean}`);
+});
+
+test('simulatePostIPO: variance grows with horizon', () => {
+  const closes = Array.from({ length: 4000 }, () => 165);
+  const r = simulatePostIPO({ closes, dailySigma: 0.03, rng: mulberry32(13), days: 20 });
+  const sd = (col) => { const m = col.reduce((a, b) => a + b, 0) / col.length; return Math.sqrt(col.reduce((a, b) => a + (b - m) ** 2, 0) / col.length); };
+  assert.ok(sd(r.grid[20]) > sd(r.grid[5]), 'day-20 spread should exceed day-5 spread');
+});
+
+test('simulatePostIPO: Polymarket anchor pulls the terminal toward the implied level', () => {
+  const closes = Array.from({ length: 4000 }, () => 165);
+  const thresh = [1.0, 1.6, 2.2], above = [99, 50, 1], shares = 12.96e9; // median cap ~1.6T → ~$123/share
+  const free = simulatePostIPO({ closes, dailySigma: 0.03, rng: mulberry32(21), days: 20, anchorStrength: 0 });
+  const anch = simulatePostIPO({ closes, dailySigma: 0.03, rng: mulberry32(21), days: 20, polyTerminal: { thresh, above, shares }, anchorStrength: 0.6 });
+  const med = (col) => [...col].sort((a, b) => a - b)[Math.floor(col.length / 2)];
+  assert.ok(med(anch.grid[20]) < med(free.grid[20]), 'anchored terminal should sit below the free-walk terminal');
+});
+
+test('MEGA_IPO_POSTIPO_CURVE is a 21-point normalized level curve starting at 1.0', () => {
+  assert.equal(MEGA_IPO_POSTIPO_CURVE.length, 21);
+  assert.equal(MEGA_IPO_POSTIPO_CURVE[0], 1.0);
 });

@@ -318,6 +318,50 @@ export function bottomFeedTicket(cfg) {
   };
 }
 
+// ---- 20-day post-IPO engine (Phase 2) ----------------------------------------
+// Illustrative normalized post-IPO median path for large tech/space listings:
+// a mild first-week fade then a gradual drift back up. Day index 0..20, level[0]=1.
+// Used only as an OPTIONAL drift shape (driftWeight default 0 = martingale).
+export const MEGA_IPO_POSTIPO_CURVE = [
+  1.000, 0.985, 0.972, 0.965, 0.962, 0.968, 0.975, 0.982, 0.988, 0.992, 0.996,
+  1.000, 1.004, 1.008, 1.011, 1.014, 1.016, 1.018, 1.020, 1.021, 1.022,
+];
+
+// Walk each Day-1 close forward `days` trading days. Per-day log change blends:
+//   diffusion:  -0.5σ² + σ·Z                              (martingale GBM)
+//   drift:      driftWeight · log(curve[d]/curve[d-1])     (optional historical shape)
+//   anchor:     anchorStrength · (d/days) · (logT − logS)  (Polymarket terminal soft-pull)
+// where logT is a per-path log terminal sampled once from the Polymarket close-cap curve.
+export function simulatePostIPO(cfg) {
+  const {
+    closes, dailySigma, rng, days = 20,
+    driftCurve = MEGA_IPO_POSTIPO_CURVE, driftWeight = 0,
+    polyTerminal = null, anchorStrength = 0.3,
+  } = cfg;
+  const N = closes.length, g = () => gaussFrom(rng);
+  const hist = (driftCurve && driftWeight > 0)
+    ? Array.from({ length: days }, (_, i) => Math.log((driftCurve[i + 1] ?? 1) / (driftCurve[i] ?? 1)))
+    : null;
+  const grid = Array.from({ length: days + 1 }, () => new Array(N));
+  for (let p = 0; p < N; p++) {
+    let logS = Math.log(closes[p]);
+    grid[0][p] = closes[p];
+    let logT = null;
+    if (polyTerminal && anchorStrength > 0) {
+      const cap = sampleCap(polyTerminal.thresh, polyTerminal.above, rng); // $T
+      logT = Math.log(cap * 1e12 / polyTerminal.shares);
+    }
+    for (let d = 1; d <= days; d++) {
+      let dLog = -0.5 * dailySigma * dailySigma + g() * dailySigma;
+      if (hist) dLog += driftWeight * hist[d - 1];
+      if (logT != null) dLog += anchorStrength * (d / days) * (logT - logS);
+      logS += dLog;
+      grid[d][p] = Math.exp(logS);
+    }
+  }
+  return { grid, days };
+}
+
 // For each early step k, P(close > entry | price at step k < entry).
 export function conditionalRecovery(grid, entry, ks = [1, 2, 3]) {
   const steps = grid.length - 1, N = grid[0].length, close = grid[steps];
