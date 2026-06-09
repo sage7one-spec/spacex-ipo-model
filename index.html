@@ -132,7 +132,7 @@
   <div class="secrow"><h2>Execution Plan — Day 1 (flat by close)</h2><span class="ln"></span></div>
   <p class="hint">A scaled sell plan for your $135 allocation, scored against all 10,000 simulated paths.
     Pick a posture; the levels, tickets, and odds re-compute live. Selling within Fidelity's first
-    <b>15 calendar days</b> is a "flip" (6-month IPO-access block, first offense) — see the Day-16 comparison below.</p>
+    <b>15 calendar days</b> is a "flip" (6-month IPO-access block, first offense) — see the 20-day hold fan (Case C) below.</p>
 
   <div class="row" style="gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0">
     <div id="scenBtns" style="display:flex;gap:8px"></div>
@@ -156,9 +156,18 @@
   <h3 style="margin-top:14px">Intraday checkpoints</h3>
   <div id="checkpointList" class="hint"></div>
 
-  <h3 style="margin-top:16px">Day-1 (flip) vs Day-16 (clean) — what the IPO-access penalty costs</h3>
-  <div id="compareNote" class="verdict" style="margin:8px 0"></div>
-  <div class="cbox short"><canvas id="compareChart"></canvas></div>
+  <h3 style="margin-top:16px">Case C — hold the $135 allocation: 20-day probability fan</h3>
+  <p class="hint">If Fidelity locks the allocation for the ~16-day flip window, this is the daily price distribution over the first 20 trading days. The dashed amber line is your $135 basis — bands below it are underwater. Median = white line.</p>
+  <div class="cbox"><canvas id="fan20"></canvas></div>
+  <div class="ctlrow" style="display:flex;gap:18px;flex-wrap:wrap;margin-top:10px">
+    <div class="ctl"><label>Historical drift weight <span class="val" id="driftWLbl">0</span>/100</label>
+      <input type="range" id="driftW" min="0" max="100" value="0"><div class="hint">0 = martingale (no drift). Higher = lean on the mega-IPO post-IPO shape.</div></div>
+    <div class="ctl"><label>Polymarket anchor <span class="val" id="anchorSLbl">30</span>/100</label>
+      <input type="range" id="anchorS" min="0" max="100" value="30"><div class="hint">How strongly the crowd's close-cap pulls the day-20 terminal.</div></div>
+    <div class="ctl"><label>Exit day <span class="val" id="exitDayLbl">20</span></label>
+      <input type="range" id="exitDay" min="1" max="20" value="20"><div class="hint">Net $ on $100k and underwater odds if you exit on this day.</div></div>
+  </div>
+  <div id="fan20Out" class="verdict" style="margin:10px 0"></div>
 </section>
 
   <div class="foot">
@@ -171,7 +180,7 @@
   <div class="disc">
     <b>Not financial advice.</b> The June 11 2026 date and $135 price are inputs you supplied and are <b>not independently verified here</b> — no S-1 in my data, and Polymarket still resolves "No" if no IPO occurs by Dec 31 2027. The Hyperliquid <code>xyz:SPCX</code> perp is a synthetic proxy with basis risk (note the May 28 flash-crash). A $2T-scale listing may behave nothing like the historical comparables, and intraday IPO volatility can be extreme (halts, gaps). Confirm terms with Fidelity. A $150,000 position can move thousands of dollars in minutes. Size to what you can afford to lose.
     <br><br>
-    <b>About the Execution Plan.</b> It models fills at 8 intraday steps (an approximation of true intraday highs/lows) and assumes limit orders fill at the rung price, the core sells at the opening print, and stops fill <i>at the stop price</i> — real fills can <b>gap through a stop</b> in a fast move or halt, so the "hold more" scenarios carry more downside than the model shows. The ~17% chance of a sub-$135 sale is largely irreducible: it is roughly the model's probability that SPCX is below your $135 basis at the open or the close, which a must-be-flat-by-close plan cannot avoid. Per this model the highest-expected-value Day-1 move is simply to sell into the open; the laddered scenarios trade a small expected haircut for upside participation plus a defined floor. The Day-16 comparison assumes zero drift over ~11 trading days and is a planning estimate, not a forecast. Order types, the on-close (MOC/LOC) cutoff, and stop behavior on a first-day IPO must be confirmed in your own Fidelity account; <b>selling within 15 calendar days is a flip</b> (6-month IPO-access block, first offense).
+    <b>About the Execution Plan.</b> It models fills at 8 intraday steps (an approximation of true intraday highs/lows) and assumes limit orders fill at the rung price, the core sells at the opening print, and stops fill <i>at the stop price</i> — real fills can <b>gap through a stop</b> in a fast move or halt, so the "hold more" scenarios carry more downside than the model shows. The ~17% chance of a sub-$135 sale is largely irreducible: it is roughly the model's probability that SPCX is below your $135 basis at the open or the close, which a must-be-flat-by-close plan cannot avoid. Per this model the highest-expected-value Day-1 move is simply to sell into the open; the laddered scenarios trade a small expected haircut for upside participation plus a defined floor. The 20-day hold fan (Case C) defaults to zero drift (a martingale); the optional drift-weight and Polymarket-anchor sliders are planning aids, not forecasts. Order types, the on-close (MOC/LOC) cutoff, and stop behavior on a first-day IPO must be confirmed in your own Fidelity account; <b>selling within 15 calendar days is a flip</b> (6-month IPO-access block, first offense).
   </div>
 </div>
 
@@ -179,7 +188,7 @@
 import { mulberry32, parsePolymarketCurve, curveArrays, parseHyperliquid,
          realizedVolFromCandles, medianCapT, disagreement, simulateDayOne,
          evaluatePolicy, sellAllAt, conditionalRecovery, buildScenario, SCENARIO_NAMES,
-         ticketsFromPolicy, simulateDay16, buildDay16Policy } from './model.js';
+         ticketsFromPolicy, simulatePostIPO, postIpoBands, netDollars, fmtNet } from './model.js';
 import { BAKED_SNAPSHOT } from './snapshot.js';
 
 // Live data store — starts as the baked snapshot, replaced by fetchLive() in Task 10.
@@ -208,7 +217,7 @@ function fmtUsd(x){return (x<0?'-$':'$')+Math.abs(Math.round(x)).toLocaleString(
 function cls(x){return x>0.001?'pos':x<-0.001?'neg':'neu';}
 function setText(id,t){document.getElementById(id).textContent=t;}
 
-let closeChart,rangeChart,survChart,touchChart;
+let closeChart,rangeChart,survChart,touchChart,fan20Chart;
 const GRID='#1a2336',TICK='#8b97ad',PUR='#7c5cff',BLUE='#4da3ff';
 const baseOpts=(e={})=>Object.assign({responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
   scales:{x:{grid:{color:GRID},ticks:{color:TICK}},y:{grid:{color:GRID},ticks:{color:TICK}}}},e);
@@ -270,10 +279,54 @@ function render(){
   renderExecutionPlan(sim);
 }
 
-let compareChartRef = null;
 function fmtMoney(x){ return '$'+Math.round(x).toLocaleString(); }
 function el(tag, props={}, ...kids){ const e=document.createElement(tag); Object.assign(e, props); for (const k of kids) e.append(k); return e; }
 function txt(s){ return document.createTextNode(s); }
+
+function render20Day(sim, entry){
+  const dailySigma = 0.02 + 0.18 * (state.vol / 100);            // same per-session sigma the Day-1 model uses
+  const { thresh, above } = curveArrays(live.curve);
+  const driftWeight = (+document.getElementById('driftW').value) / 100;
+  const anchorStrength = (+document.getElementById('anchorS').value) / 100;
+  const exitDay = +document.getElementById('exitDay').value;
+  document.getElementById('driftWLbl').textContent = Math.round(driftWeight*100);
+  document.getElementById('anchorSLbl').textContent = Math.round(anchorStrength*100);
+  document.getElementById('exitDayLbl').textContent = exitDay;
+
+  const pip = simulatePostIPO({ closes: sim.closes, dailySigma, rng: mulberry32(SEED + 20), days: 20,
+    driftWeight, polyTerminal: { thresh, above, shares: state.shares }, anchorStrength });
+  const bands = postIpoBands(pip.grid, entry);
+  const labels = bands.map(b => b.day);
+  const col = (a) => bands.map(b => b[a]);
+  const band = (a, fillTo, bg) => ({ data: col(a), borderColor:'transparent', pointRadius:0, fill: fillTo, backgroundColor: bg, tension:0.2 });
+
+  if (fan20Chart) fan20Chart.destroy();
+  fan20Chart = new Chart(document.getElementById('fan20'), {
+    type:'line',
+    data:{ labels, datasets:[
+      band('p95', 4, 'rgba(124,92,255,0.10)'),                    // idx0 → fills to p5 (idx4): [p5,p95] light
+      band('p75', 3, 'rgba(124,92,255,0.24)'),                    // idx1 → fills to p25 (idx3): [p25,p75] darker
+      { label:'Median', data: col('median'), borderColor:'#fff', borderWidth:2, pointRadius:0, fill:false, tension:0.2 }, // idx2
+      { data: col('p25'), borderColor:'transparent', pointRadius:0, fill:false },   // idx3
+      { data: col('p5'),  borderColor:'transparent', pointRadius:0, fill:false },   // idx4
+      { label:`$${entry} basis`, data: labels.map(()=>entry), borderColor:'#ffb648', borderDash:[6,4], borderWidth:2, pointRadius:0, fill:false }, // idx5
+    ]},
+    options:{ plugins:{ legend:{ display:false } },
+      scales:{ x:{ title:{ display:true, text:'Trading day' } },
+               y:{ ticks:{ callback:v=>'$'+v.toFixed(0) } } } }
+  });
+
+  const cShares = 100000 / entry;                                 // shares the $100k allocation buys at $135
+  const b = bands[exitDay - 1];
+  const out = document.getElementById('fan20Out'); out.textContent='';
+  out.append(
+    el('b', { textContent: `Case C — hold to day ${exitDay}: ` }),
+    txt('median '),
+    el('b', { textContent: fmtNet(netDollars(cShares * b.median - 100000)), style:'color:'+(b.median>=entry?'#28d17c':'#ff5c6c') }),
+    txt(` on $100k (middle-90% ${fmtNet(netDollars(cShares*b.p5 - 100000))} to ${fmtNet(netDollars(cShares*b.p95 - 100000))}). `),
+    el('b', { textContent: (b.pBelow*100).toFixed(0)+'% underwater', style:'color:'+(b.pBelow>0.33?'#ff5c6c':'#ffb648') }),
+    txt(` (below your $${entry} basis at day ${exitDay}).`));
+}
 
 function renderExecutionPlan(sim){
   const entry = sim.entry;
@@ -371,26 +424,7 @@ function renderExecutionPlan(sim){
   ul.append(el('li', {}, el('b', { textContent:t.flatBy }), txt(' — confirm the position is fully closed.')));
   cl.append(ul);
 
-  // Day-16 comparison
-  const sessionSigma = 0.02 + 0.18 * (state.vol / 100);
-  const d16 = simulateDay16({ closes: sim.closes, dailySigma: sessionSigma, rng });
-  const r16 = evaluatePolicy({ grid: d16.grid, entry }, buildDay16Policy(entry, shares, d16.meanLevel16));
-  const accessCost = r16.Eproceeds - r.Eproceeds; // + = Day-16 nets more (the flip costs you money too)
-  const cn = document.getElementById('compareNote'); cn.textContent='';
-  cn.append(
-    txt('Waiting to a clean Day-16 exit nets an expected '),
-    el('b', { textContent: fmtMoney(r16.Eproceeds) }),
-    txt(` vs ${fmtMoney(r.Eproceeds)} for this Day-1 plan — a difference of `),
-    el('b', { textContent: (accessCost>=0?'+':'')+fmtMoney(accessCost), style:'color:'+(accessCost>=0?'#28d17c':'#ff5c6c') }),
-    txt(`. So the Day-1 flip ${accessCost>=0?'costs':'gains'} you roughly that much in expected proceeds, on top of the 6-month IPO-access block. Day-16 also carries ~11 trading days of overnight/gap risk this single-session plan does not (its sub-$${entry} sale odds: ${(r16.pSubBasisSale*100).toFixed(0)}%).`));
-
-  const cc = document.getElementById('compareChart');
-  if (compareChartRef) compareChartRef.destroy();
-  compareChartRef = new Chart(cc, { type:'bar', data:{
-    labels:['Sell @ open','Day-1 plan','Hold→close','Day-16 clean'],
-    datasets:[{ label:'Expected proceeds', data:[atOpen.Eproceeds, r.Eproceeds, toClose.Eproceeds, r16.Eproceeds],
-      backgroundColor:['#5a4b8a','#b58bff','#5a4b8a','#28d17c'] }] },
-    options:{ plugins:{ legend:{ display:false } }, scales:{ y:{ ticks:{ callback:v=>'$'+(v/1000).toFixed(0)+'k' } } } } });
+  render20Day(sim, entry);
 }
 
 function updateLiveStrip(dis){
@@ -534,6 +568,7 @@ function bind(){
   g('vol').value = state.vol; setText('volLbl', state.vol); // reflect realized-vol default
   g('risk').addEventListener('input', e=>{ state.risk=+e.target.value; setText('riskLbl', state.risk); render(); });
   g('openPx').addEventListener('input', e=>{ const v=+e.target.value; state.openPx = (e.target.value==='' || !(v>0)) ? null : v; render(); });
+  ['driftW','anchorS','exitDay'].forEach(id => document.getElementById(id).addEventListener('input', render));
   g('reroll').addEventListener('click',()=>{SEED=(SEED*1664525+1013904223)>>>0;reseed();render();});
   g('heatChart').addEventListener('mousemove',heatHover);
   g('heatChart').addEventListener('mouseleave',()=>{document.getElementById('heatTip').style.display='none';});
