@@ -408,6 +408,40 @@ export const MEGA_IPO_POSTIPO_CURVE = [
   1.000, 1.004, 1.008, 1.011, 1.014, 1.016, 1.018, 1.020, 1.021, 1.022,
 ];
 
+// ---- Index-inclusion / lock-up event overlay (opt-in) ------------------------
+// Per-day excess log-drift injected at full weight (eventWeight = 1). Entry i is the
+// drift applied going INTO trading day (i+1), where Day 0 is the IPO/Day-1 close
+// (Fri Jun 12 2026) and weekends + NYSE holidays (Juneteenth Jun 19, Independence Day
+// observed Jul 3) are skipped, so the calendar lands these on real catalyst sessions:
+//   Day 4  (Thu Jun 18) +1.2%  — FTSE Russell reconstitution wave begins
+//   Day 5  (Mon Jun 22) +1.8%  — Vanguard CRSP / first passive-buy cluster (~$15B est.)
+//   Day 15 (Tue Jul 7)  +2.5%  — Nasdaq-100 inclusion goes live (the big mechanical bid),
+//                                net of the Fidelity 15-day flip-lock expiry adding retail supply
+//   Day 16 (Wed Jul 8)  +0.8%  — index follow-through
+// These are demand-side impulses from the Mertz/Grok supply/demand thesis, NOT a forecast:
+// they are forced, calendar-dated flows you can dial up or down (or zero out) to stress-test
+// how much the "float deficit" story could bend the path. Lock-up supply beyond the flip
+// window (the classic 180-day cliff) falls outside this 20-day horizon.
+export const SPCX_EVENT_DRIFT = [
+  0, 0, 0, 0.012, 0.018, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0.025, 0.008, 0, 0, 0, 0,
+];
+
+// Probability a path reaches `level` by `throughDay` (running max of daily closes, d=0..throughDay)
+// and the probability it is still at/above `level` AT that day's close. Daily-close granularity —
+// it understates true intraday touches, so `everPct` is a floor on "hit the zone at some point."
+export function peakReachProb(grid, level, throughDay) {
+  const N = grid[0].length, last = Math.max(0, Math.min(throughDay, grid.length - 1));
+  let ever = 0, at = 0;
+  for (let p = 0; p < N; p++) {
+    let mx = -Infinity;
+    for (let d = 0; d <= last; d++) { const v = grid[d][p]; if (v > mx) mx = v; }
+    if (mx >= level) ever++;
+    if (grid[last][p] >= level) at++;
+  }
+  return { everPct: ever / N, atPct: at / N, throughDay: last };
+}
+
 // Walk each Day-1 close forward `days` trading days. Per-day log change blends:
 //   diffusion:  -0.5σ² + σ·Z                              (martingale GBM)
 //   drift:      driftWeight · log(curve[d]/curve[d-1])     (optional historical shape)
@@ -418,6 +452,7 @@ export function simulatePostIPO(cfg) {
     closes, dailySigma, rng, days = 20,
     driftCurve = MEGA_IPO_POSTIPO_CURVE, driftWeight = 0,
     polyTerminal = null, anchorStrength = 0.3,
+    eventCurve = null, eventWeight = 0,
   } = cfg;
   const N = closes.length, g = () => gaussFrom(rng);
   const hist = (driftCurve && driftWeight > 0)
@@ -440,6 +475,7 @@ export function simulatePostIPO(cfg) {
     for (let d = 1; d <= days; d++) {
       let dLog = -0.5 * dailySigma * dailySigma + g() * dailySigma;
       if (hist) dLog += driftWeight * hist[d - 1];
+      if (eventCurve && eventWeight) dLog += eventWeight * (eventCurve[d - 1] || 0);
       if (logT != null) dLog += anchorStrength * (d / days) * (logT - logS);
       logS += dLog;
       grid[d][p] = Math.exp(logS);

@@ -17,7 +17,7 @@ import {
   simulateBottomFeed,
   bottomFeedTicket,
   MEGA_IPO_POSTIPO_CURVE, simulatePostIPO,
-  postIpoBands,
+  postIpoBands, SPCX_EVENT_DRIFT, peakReachProb,
   sampleBridgeMin, sampleBridgeMax, sampleCapU, normalizeTimingCurve,
 } from '../model.js';
 
@@ -599,4 +599,54 @@ test('postIpoBands: pBelow grows with horizon for a martingale started above the
   const r = simulatePostIPO({ closes, dailySigma: 0.03, rng: mulberry32(17), days: 20 });
   const bands = postIpoBands(r.grid, 135);
   assert.ok(bands[20].pBelow >= bands[5].pBelow, 'later-day underwater prob should not shrink');
+});
+
+test('SPCX_EVENT_DRIFT: length 20, non-negative, mass on the catalyst days only', () => {
+  assert.equal(SPCX_EVENT_DRIFT.length, 20);
+  assert.ok(SPCX_EVENT_DRIFT.every(x => x >= 0));
+  // catalysts: Day 4 (idx3), Day 5 (idx4), Day 15 (idx14), Day 16 (idx15)
+  for (const i of [3, 4, 14, 15]) assert.ok(SPCX_EVENT_DRIFT[i] > 0, `expected drift at idx ${i}`);
+  for (const i of [0, 1, 2, 6, 10, 19]) assert.equal(SPCX_EVENT_DRIFT[i], 0, `expected no drift at idx ${i}`);
+});
+
+test('simulatePostIPO: event overlay lifts the terminal vs the same paths with weight 0', () => {
+  const closes = Array.from({ length: 6000 }, () => 150);
+  const base = simulatePostIPO({ closes, dailySigma: 0.02, rng: mulberry32(101), days: 20,
+    eventCurve: SPCX_EVENT_DRIFT, eventWeight: 0 });
+  const lift = simulatePostIPO({ closes, dailySigma: 0.02, rng: mulberry32(101), days: 20,
+    eventCurve: SPCX_EVENT_DRIFT, eventWeight: 1 });
+  const meanLast = g => g.grid[20].reduce((a, b) => a + b, 0) / g.grid[20].length;
+  assert.ok(meanLast(lift) > meanLast(base), 'event overlay should raise the day-20 mean');
+});
+
+test('simulatePostIPO: eventWeight 0 (default) is identical to no eventCurve — pure martingale untouched', () => {
+  const closes = Array.from({ length: 2000 }, () => 150);
+  const a = simulatePostIPO({ closes, dailySigma: 0.02, rng: mulberry32(5), days: 20 });
+  const b = simulatePostIPO({ closes, dailySigma: 0.02, rng: mulberry32(5), days: 20,
+    eventCurve: SPCX_EVENT_DRIFT, eventWeight: 0 });
+  assert.equal(a.grid[20][0], b.grid[20][0]);
+  assert.equal(a.grid[20][1999], b.grid[20][1999]);
+});
+
+test('peakReachProb: ever ≥ at, both in [0,1], and a higher level is rarer', () => {
+  const closes = Array.from({ length: 4000 }, () => 150);
+  const r = simulatePostIPO({ closes, dailySigma: 0.03, rng: mulberry32(202), days: 20 });
+  const lo = peakReachProb(r.grid, 200, 15);
+  const hi = peakReachProb(r.grid, 270, 15);
+  for (const x of [lo, hi]) {
+    assert.ok(x.everPct >= x.atPct - 1e-9, 'ever-reached must be ≥ at-day');
+    assert.ok(x.everPct >= 0 && x.everPct <= 1 && x.atPct >= 0 && x.atPct <= 1);
+  }
+  assert.ok(lo.everPct >= hi.everPct, 'reaching a lower level should be at least as likely');
+  assert.equal(hi.throughDay, 15);
+});
+
+test('peakReachProb: a path that spikes then fades counts in everPct but not atPct', () => {
+  // one path: rises through 270 at day 2, falls back below by the cutoff day
+  const grid = [
+    [135], [200], [275], [260], [150], [140],
+  ];
+  const r = peakReachProb(grid, 270, 5);
+  assert.equal(r.everPct, 1);
+  assert.equal(r.atPct, 0);
 });
