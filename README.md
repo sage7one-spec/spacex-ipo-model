@@ -44,7 +44,10 @@ full unconditional picture. The discipline is in the exit — the OCO bracket en
 automatically.
 
 **Case C — Post-IPO hold (20-day probabilistic fan).** Hold the $135 allocation to a chosen exit
-day across a 20-day fan of paths, replacing the former static Day-16 comparison. Each simulated path
+day across a 20-day fan of paths, replacing the former static Day-16 comparison. Fidelity's flip
+window is 15 **calendar** days (not trading sessions): from the Fri Jun 12 IPO it ends over the
+Jun 27–28 weekend, so the first penalty-free sale is **Mon Jun 29** — trading Day 10 on the chart's
+NYSE calendar, and the default exit day. Each simulated path
 starts at its Day-1 close (already HL/Poly-blended) and evolves forward stochastically. On the
 baked snapshot roughly 20% of paths are underwater at the Day-1 close, rising to roughly 25% by Day
 20.

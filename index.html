@@ -162,7 +162,7 @@
   <h3 style="margin-top:14px">Intraday checkpoints</h3>
   <div id="checkpointList" class="hint"></div>
 
-  <h3 style="margin-top:16px">Case B — bottom-feeder: buy the Day-1 dip ≤ $135 (open market, no 16-day lock)</h3>
+  <h3 style="margin-top:16px">Case B — bottom-feeder: buy the Day-1 dip ≤ $135 (open market, no flip-window lock)</h3>
   <p class="hint">A separate cash play of the same size as your position: a limit BUY that fills only if SPCX trades down to your price on Day 1, then an OCO bracket (profit target / stop) exits the same day. If it never dips to your limit, nothing fills — you keep your cash, $0 change. Scored on the same simulated paths as Case A.</p>
   <div class="ctlrow" style="display:flex;gap:18px;flex-wrap:wrap">
     <div class="ctl"><label>Limit buy price <span class="val" id="bfLimitLbl">$135</span></label>
@@ -177,7 +177,7 @@
   <div id="bfTicket"></div>
 
   <h3 style="margin-top:16px">Case C — hold the $135 allocation: 20-day probability heatmap (by trading day)</h3>
-  <p class="hint">If Fidelity locks the allocation for the ~16-day flip window, this is the daily price distribution over the first 20 trading sessions, dated on the real NYSE calendar (Juneteenth and Jul 3 closed). <b>Brighter = more paths sit at that price that day.</b> White = median path; dashed amber = your $135 basis (bands below it are underwater); blue marker = the <b>Jul 7 Nasdaq-100</b> inclusion; green marker = your chosen exit day; dotted red = Grok's $270 zone. Sliders default to my recommended planning overlay — zero any of them out for a pure martingale.</p>
+  <p class="hint">If you hold the allocation through Fidelity's <b>15-calendar-day</b> flip window (counted in calendar days, not trading sessions — it ends over the Jun 27–28 weekend, so the first penalty-free sale is <b>Mon Jun 29</b>), this is the daily price distribution over the first 20 trading sessions, dated on the real NYSE calendar (Juneteenth and Jul 3 closed). <b>Brighter = more paths sit at that price that day.</b> White = median path; dashed amber = your $135 basis (bands below it are underwater); purple marker = flip-lock end (<b>Mon Jun 29</b>); blue marker = the <b>Jul 7 Nasdaq-100</b> inclusion; green marker = your chosen exit day; dotted red = Grok's $270 zone. Sliders default to my recommended planning overlay — zero any of them out for a pure martingale.</p>
   <div class="heatwrap" style="height:380px"><canvas id="fan20"></canvas><div id="fan20Tip" class="heattip"></div></div>
   <div class="heatleg">
     <span>less likely</span><span class="grad"></span><span>more likely</span>
@@ -193,8 +193,8 @@
       <input type="range" id="anchorS" min="0" max="100" value="40"><div class="hint">How strongly the live crowd close-cap pulls the terminal. Default 40 — the most defensible signal.</div></div>
     <div class="ctl"><label>Index-inclusion event overlay <span class="val" id="eventWLbl">50</span>/100</label>
       <input type="range" id="eventW" min="0" max="100" value="50"><div class="hint">Forced passive-buy impulses on the Jun 18–22 + Jul 7 catalyst days (the Mertz/Grok float-deficit thesis). Default 50. Set 0 to remove.</div></div>
-    <div class="ctl"><label>Exit day <span class="val" id="exitDayLbl">17 · Thu Jul 9</span></label>
-      <input type="range" id="exitDay" min="1" max="20" value="17"><div class="hint">Net $ on $100k and underwater odds if you exit on this session. Default 17 ≈ the 1-month assessment point.</div></div>
+    <div class="ctl"><label>Exit day <span class="val" id="exitDayLbl">10 · Mon Jun 29</span></label>
+      <input type="range" id="exitDay" min="1" max="20" value="10"><div class="hint">Net $ on $100k and underwater odds if you exit on this session. Default 10 = Mon Jun 29, the first penalty-free exit after Fidelity's 15-calendar-day flip window. Slide right to test holding through the Jul 7 Nasdaq-100 inclusion (day 15) or the ~1-month mark (day 17).</div></div>
   </div>
   <div id="fan20Out" class="verdict" style="margin:10px 0"></div>
 </section>
@@ -250,8 +250,10 @@ const STEP_LABELS=['Open','+1h','+2h','+3h','+4h','+5h','+6h','+7h','Close'];
 
 // NYSE trading-day calendar from the IPO. Day 0 = IPO / Day-1 close (Fri Jun 12 2026).
 // Weekends + NYSE holidays in-window are skipped (Juneteenth Fri Jun 19, Independence Day
-// observed Fri Jul 3), so the day index maps to real catalyst sessions — Nasdaq-100
-// inclusion (Jul 7) lands on Day 15; the 1-month assessment point (~Jul 9) on Day 17.
+// observed Fri Jul 3), so the day index maps to real catalyst sessions — Fidelity's
+// 15-CALENDAR-day flip window ends over the Jun 27–28 weekend, so the first penalty-free
+// sale (Mon Jun 29) lands on Day 10; Nasdaq-100 inclusion (Jul 7) on Day 15; the 1-month
+// assessment point (~Jul 9) on Day 17.
 const MON_=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DOW_=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const NYSE_HOLIDAYS=new Set(['2026-06-19','2026-07-03']);
@@ -268,6 +270,7 @@ function buildTradingDays(y,m,d,n){
 }
 const TDAYS=buildTradingDays(2026,5,12,20);             // indices 0..20
 const NASDAQ_IDX=TDAYS.findIndex(d=>d.iso==='2026-07-07'); // Day 15
+const LOCK_END_IDX=TDAYS.findIndex(d=>d.iso==='2026-06-29'); // Day 10 — first penalty-free sale (15-calendar-day flip window ends Jun 27–28 weekend)
 const dayLabel=i=>TDAYS[i]?TDAYS[i].label:('Day '+i);
 
 function pctile(arr,p){const s=[...arr].sort((a,b)=>a-b);const idx=(s.length-1)*p;const lo=Math.floor(idx),hi=Math.ceil(idx);return s[lo]+(s[hi]-s[lo])*(idx-lo);}
@@ -379,7 +382,7 @@ function render20Day(sim, entry){
     eventCurve: SPCX_EVENT_DRIFT, eventWeight });
   const bands = postIpoBands(pip.grid, entry);
 
-  drawDayHeat(pip.grid, entry, exitDay, NASDAQ_IDX);
+  drawDayHeat(pip.grid, entry, exitDay, NASDAQ_IDX, LOCK_END_IDX);
 
   const cShares = state.pos / entry;                              // shares the allocation buys at the entry price
   const b = bands[exitDay];
@@ -652,7 +655,7 @@ function heatHover(e){
 }
 // ---- Case C: day-by-day probability heatmap (custom canvas) ----
 const DHEAT={}; // geometry cache for hover
-function drawDayHeat(grid, entry, exitDay, catIdx){
+function drawDayHeat(grid, entry, exitDay, catIdx, lockIdx){
   const cv=document.getElementById('fan20'),wrap=cv.parentElement,dpr=window.devicePixelRatio||1;
   const W=wrap.clientWidth,H=wrap.clientHeight;
   cv.width=W*dpr;cv.height=H*dpr;cv.style.width=W+'px';cv.style.height=H+'px';
@@ -687,13 +690,14 @@ function drawDayHeat(grid, entry, exitDay, catIdx){
     ctx.beginPath();ctx.moveTo(padL,yOf(270));ctx.lineTo(W-padR,yOf(270));ctx.stroke();ctx.setLineDash([]);
     ctx.fillStyle='#ff8d99';ctx.fillText('$270 Grok zone',padL+4,yOf(270)-3);
   } else { ctx.fillStyle='#ff8d99';ctx.fillText('↑ $270 Grok zone (off-scale)',padL+4,padT+10); }
-  // vertical markers: Jul 7 catalyst + chosen exit
+  // vertical markers: flip-lock end (Mon Jun 29) + Jul 7 catalyst + chosen exit
   const vline=(d,color,label)=>{ if(d<0||d>=days)return; const x=xOf(d);
     ctx.strokeStyle=color;ctx.lineWidth=1.2;ctx.setLineDash([3,3]);
     ctx.beginPath();ctx.moveTo(x,padT);ctx.lineTo(x,padT+plotH);ctx.stroke();ctx.setLineDash([]);
-    ctx.fillStyle=color;ctx.font='10px sans-serif';ctx.textAlign='center';ctx.fillText(label,x,padT-6); };
+    if(label){ctx.fillStyle=color;ctx.font='10px sans-serif';ctx.textAlign='center';ctx.fillText(label,x,padT-6);} };
+  vline(lockIdx,'#b9a7ff',lockIdx===exitDay?'':'lock ends');
   vline(catIdx,'#4da3ff','Jul 7');
-  vline(exitDay,'#28d17c','exit');
+  vline(exitDay,'#28d17c',lockIdx===exitDay?'exit · lock ends':'exit');
   // y ticks
   ctx.fillStyle=TICK;ctx.font='11px sans-serif';ctx.textAlign='right';ctx.textBaseline='middle';
   niceTicks(yMin,yMax,6).forEach(v=>{if(v>=yMin&&v<=yMax)ctx.fillText('$'+v,padL-6,yOf(v));});

@@ -415,9 +415,12 @@ export const MEGA_IPO_POSTIPO_CURVE = [
 // observed Jul 3) are skipped, so the calendar lands these on real catalyst sessions:
 //   Day 4  (Thu Jun 18) +1.2%  — FTSE Russell reconstitution wave begins
 //   Day 5  (Mon Jun 22) +1.8%  — Vanguard CRSP / first passive-buy cluster (~$15B est.)
-//   Day 15 (Tue Jul 7)  +2.5%  — Nasdaq-100 inclusion goes live (the big mechanical bid),
-//                                net of the Fidelity 15-day flip-lock expiry adding retail supply
+//   Day 15 (Tue Jul 7)  +2.5%  — Nasdaq-100 inclusion goes live (the big mechanical bid)
 //   Day 16 (Wed Jul 8)  +0.8%  — index follow-through
+// Note: Fidelity's flip window is 15 CALENDAR days (not trading sessions) — it ends over the
+// Jun 27–28 weekend, so flip-eligible retail supply arrives from Day 10 (Mon Jun 29), well
+// before the Jul 7 inclusion. That supply is not separately modeled; treat the Day 15
+// impulse as gross of it.
 // These are demand-side impulses from the Mertz/Grok supply/demand thesis, NOT a forecast:
 // they are forced, calendar-dated flows you can dial up or down (or zero out) to stress-test
 // how much the "float deficit" story could bend the path. Lock-up supply beyond the flip
